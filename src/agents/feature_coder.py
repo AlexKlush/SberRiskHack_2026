@@ -184,14 +184,17 @@ def run(state: AgentState) -> dict:
         df_train_out = None
         df_test_out = None
 
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 if attempt == 0:
                     response = llm.invoke(messages)
                     code_str = _extract_code(response.content)
                 else:
+                    # Include full traceback for better error fixing
+                    import traceback
+                    err_details = "".join(traceback.format_exception(type(last_error), last_error, last_error.__traceback__))
                     fix_prompt = FIX_PROMPT_TEMPLATE.format(
-                        error_message=str(last_error),
+                        error_message=err_details[-1500:],  # last 1500 chars of traceback
                         previous_code=code_str,
                     )
                     fix_messages = [

@@ -1,181 +1,132 @@
 # Задачи для команды — SberRiskHack 2026
 
-Пайплайн уже работает. Ниже — что каждый может делать параллельно, чтобы поднять ROC-AUC.
+Система будет проверяться на **скрытом датасете**. Нельзя хардкодить ничего под конкретные данные. Всё должно быть универсальным.
 
 ---
 
-## Участник 1 — EDA и ручные фичи
+## Участник 1 — Улучшение промтов GigaChat (FeatureIdeator)
 
-**Цель:** найти закономерности в данных, которые LLM мог пропустить.
-
-**Что делать:**
-```bash
-# В папке feature-agent, с активированным .venv
-python
-```
-```python
-import pandas as pd
-
-train = pd.read_csv("data/train.csv")
-users = pd.read_csv("data/users.csv")
-oi = pd.read_csv("data/order_items.csv")
-orders = pd.read_csv("data/orders.csv")
-products = pd.read_csv("data/products.csv")
-
-# 1. Посмотри распределение таргета
-print(train["target"].value_counts(normalize=True))
-
-# 2. Какие колонки users коррелируют с target?
-merged = train.merge(users, on="user_id")
-for col in users.columns:
-    if col != "user_id":
-        print(f"{col}: corr={merged[col].corr(merged['target']):.4f}")
-
-# 3. Топ-товары по reorder rate
-prod_stats = oi.groupby("product_id")["reordered"].agg(["mean","count"])
-print(prod_stats.sort_values("mean", ascending=False).head(20))
-
-# 4. Проверь гипотезы:
-# - Влияет ли day_of_week на повторные покупки?
-# - Есть ли зависимость от количества заказов пользователя?
-# - Какие aisle/department чаще повторно покупают?
-```
-
-**Результат:** список из 3-5 гипотез для новых признаков → передай Участнику 2.
-
----
-
-## Участник 2 — Улучшение промтов для GigaChat
-
-**Цель:** сделать так, чтобы GigaChat генерировал более качественные идеи фичей.
+**Цель:** сделать так, чтобы GigaChat генерировал качественные идеи фичей на ЛЮБОМ датасете.
 
 **Файл:** `src/agents/feature_ideator.py`
 
 **Что делать:**
-1. Открой файл, найди `SYSTEM_PROMPT` и `USER_PROMPT_TEMPLATE`
-2. Добавь в `<few_shot_example>` конкретные примеры хороших фичей для ЭТОГО датасета:
-```
-Хорошая идея:
-{"name": "user_prod_buy_count", "description": "Сколько раз user покупал этот product в прошлых заказах",
- "columns_used": ["user_id", "product_id"], "extra_tables_used": ["order_items", "orders"],
- "category": "CROSS_TABLE", "hypothesis": "Чем чаще покупал — тем вероятнее купит снова"}
-```
-3. Добавь в `<feature_categories>` новую категорию:
-```
-- USER_PRODUCT_HISTORY: признаки на уровне пары (user_id, product_id) — count покупок, последний заказ, среднее position in cart
-```
-4. Используй результаты EDA от Участника 1 для подсказок
+1. Открой `SYSTEM_PROMPT` и `USER_PROMPT_TEMPLATE`
+2. Улучши few-shot примеры — добавь разнообразные примеры фичей:
+   - Агрегация по ключу из доп. таблицы (mean, count, nunique)
+   - Взаимодействие двух числовых колонок (ratio, difference)
+   - Frequency encoding категориальной колонки
+   - Количество записей в доп. таблице для данного ключа
+3. Добавь в `<thinking>` подсказку: "Посмотри на join_keys — какие агрегации из доп. таблиц можно построить?"
+4. Протестируй: `python run.py` — смотри что генерирует GigaChat в логе
 
-**Результат:** коммит с улучшенными промтами → `git add ... && git commit && git push`
+**Важно:** НЕ упоминай конкретные имена таблиц/колонок (users, orders и т.д.) — всё через переменные из schema.
 
 ---
 
-## Участник 3 — Ручные фичи в fallback
+## Участник 2 — Улучшение промтов GigaChat (FeatureCoder)
 
-**Цель:** добавить вручную самые сильные фичи, не завися от LLM.
+**Цель:** сделать так, чтобы код от GigaChat реже падал.
+
+**Файл:** `src/agents/feature_coder.py`
+
+**Что делать:**
+1. Открой `SYSTEM_PROMPT` и `USER_PROMPT_TEMPLATE`
+2. Добавь в constraints больше safety-правил:
+   - "Оборачивай каждый признак в try/except — если один не считается, пропусти его"
+   - "Всегда проверяй что колонка существует перед обращением к ней"
+   - "После merge проверяй что DataFrame не пустой"
+3. Добавь в output_format пример полной функции-шаблона:
+```python
+def generate_features(df_train, df_test, extra_tables=None):
+    import pandas as pd
+    import numpy as np
+    features = []
+    # для каждого признака: try/except
+    try:
+        # ... вычисление
+        features.append("feat_name")
+    except Exception:
+        pass
+    # итоговые df
+    df_train_out = df_train[[id_column, target_column] + features]
+    df_test_out = df_test[[id_column] + features]
+    return df_train_out, df_test_out
+```
+4. Протестируй на тестовом датасете
+
+---
+
+## Участник 3 — Универсальный fallback
+
+**Цель:** усилить автоматические фичи, которые генерируются БЕЗ LLM.
 
 **Файл:** `src/utils/fallback_features.py`
 
 **Что делать:**
-Добавь новые фичи в функцию `generate_fallback_features`. Примеры что стоит добавить:
-
-```python
-# 1. Среднее position in cart для товара (add_to_cart_order)
-# Товары которые добавляют первыми — базовые, их чаще покупают
-prod_cart_pos = oi.groupby("product_id")["add_to_cart_order"].mean()
-
-# 2. Сколько дней прошло с последнего заказа пользователя
-# (из orders.csv — последний days_since_prior_order)
-last_order = orders.sort_values("order_number").groupby("user_id").last()
-
-# 3. Доля повторных покупок по категории товара (aisle_id)
-# Популярные категории чаще покупают повторно
-aisle_reorder = oi.merge(products, on="product_id").groupby("aisle_id")["reordered"].mean()
-
-# 4. Количество заказов содержащих этот товар / общее число заказов user
-# (мера "лояльности" к товару)
-```
+Текущий fallback уже универсальный. Можно добавить:
+1. **Числовые статистики** — для каждой числовой колонки в train: z-score, квантильный бин
+2. **Count encoding** — сколько раз каждое значение категориальной колонки встречается (абсолютно, не normalize)
+3. **Missing flags** — флаг пропуска (1/0) для колонок с NaN
+4. **Rank features** — ранг значения внутри группировки по ключевой колонке
 
 **Важно:**
-- Считай агрегации по TRAIN или extra_tables
-- Применяй к test через `.map()` или `.merge()`
-- Заполняй NaN через `.fillna(0)`
-- Каждая фича — числовая (int/float)
-
-**Результат:** коммит → push
+- НЕ хардкодь имена таблиц или колонок
+- Используй `df_train.columns`, `df_train.dtypes` для автоопределения
+- Агрегации считай по train или extra_tables, применяй к test через `.map()`
+- Все фичи — числовые, fillna(0)
 
 ---
 
-## Участник 4 — Тестирование и стабильность
+## Участник 4 — Тестирование на разных датасетах
 
-**Цель:** убедиться что пайплайн не падает и проходит все проверки.
-
-**Что делать:**
-1. Склонируй репо, настрой окружение (по README)
-2. Запусти `python run.py` и запиши:
-   - Сколько фичей сгенерировано?
-   - Какой ROC-AUC?
-   - Были ли ошибки в логе?
-3. Запусти `python src/utils/check_submission.py` — все 13 чеков должны пройти
-4. Попробуй запустить **второй раз** — результат должен быть стабильным
-5. Если есть другой датасет — протестируй на нём
-
-**Если что-то упало:**
-- Скопируй полный traceback
-- Создай issue в GitHub или напиши в чат команды
-
-**Результат:** отчёт по стабильности, список багов если есть
-
----
-
-## Участник 5 — Подготовка сабмита
-
-**Цель:** подготовить финальный архив для загрузки на платформу.
+**Цель:** убедиться что пайплайн работает на ЛЮБЫХ данных, не только на текущем.
 
 **Что делать:**
-1. Убедись что `python src/utils/check_submission.py` проходит ✓
-2. Проверь что `.env` содержит реальный токен (не placeholder)
-3. Собери zip-архив:
-```bash
-# Из папки feature-agent:
-cd ..
-zip -r submission.zip feature-agent/ \
-  -x "feature-agent/.venv/*" \
-  -x "feature-agent/catboost_info/*" \
-  -x "feature-agent/__pycache__/*" \
-  -x "feature-agent/src/__pycache__/*" \
-  -x "feature-agent/src/agents/__pycache__/*" \
-  -x "feature-agent/src/utils/__pycache__/*" \
-  -x "feature-agent/data/*.csv" \
-  -x "feature-agent/data/*.txt" \
-  -x "feature-agent/output/*" \
-  -x "feature-agent/.git/*"
+1. Запусти на текущем датасете — запиши ROC-AUC
+2. Создай минимальный синтетический датасет для быстрого теста:
+```python
+import pandas as pd
+import numpy as np
+n = 1000
+train = pd.DataFrame({"id": range(n), "cat_a": np.random.choice(["x","y","z"], n), "num_b": np.random.randn(n), "target": np.random.randint(0,2,n)})
+test = pd.DataFrame({"id": range(n, n+200), "cat_a": np.random.choice(["x","y","z"], 200), "num_b": np.random.randn(200), "target": np.random.randint(0,2,200)})
+train.to_csv("data/train.csv", index=False)
+test.to_csv("data/test.csv", index=False)
+# Без доп. таблиц и readme — pipeline должен справиться
 ```
-Или на Windows — вручную заархивируй папку, исключив `.venv`, `data/`, `output/`, `.git/`
+3. Запусти `python run.py` — должен завершиться без ошибок
+4. Запусти `python src/utils/check_submission.py` — 13 чеков
+5. Если что-то упало — запиши traceback, создай issue
 
-4. Проверь что в архиве ЕСТЬ:
-   - `.env` (с токеном!)
-   - `run.py`
-   - `pyproject.toml`
-   - все файлы `src/`
-   - `data/.gitkeep`
-   - `output/.gitkeep`
+---
 
-5. Загрузи на платформу
+## Участник 5 — Подготовка сабмита + CI
+
+**Цель:** подготовить финальный архив и убедиться что он запускается с нуля.
+
+**Что делать:**
+1. Склонируй репо в ЧИСТУЮ папку (не ту где разрабатывали)
+2. Пройди весь README с нуля: `uv venv` → `uv sync` → настрой `.env` → положи данные → `python run.py`
+3. Убедись что `check_submission.py` проходит
+4. Собери zip:
+   - ВКЛЮЧИТЬ: `run.py`, `pyproject.toml`, `.env` (с токеном!), `src/`, `data/.gitkeep`, `output/.gitkeep`
+   - ИСКЛЮЧИТЬ: `.venv/`, `catboost_info/`, `__pycache__/`, `.git/`, `data/*.csv`, `output/*.csv`
+5. Проверь что в `.env` стоит реальный токен, не placeholder
 
 ---
 
 ## Общие правила
 
-- **Перед коммитом** всегда делай `git pull origin main` — кто-то мог запушить раньше
-- **Не коммить** `.env` с реальным токеном, `data/`, `output/`, `.venv/`
-- **Не меняй** `src/state.py`, `src/graph.py`, `run.py` без согласования — это ядро пайплайна
-- **Тестируй локально** перед пушем: `python run.py` должен завершиться без ошибок
+- **Всё должно быть dataset-agnostic** — никаких хардкодов под конкретные данные
+- Перед коммитом: `git pull origin main`
+- Не коммить `.env` с токеном, `data/`, `output/`, `.venv/`
+- Не меняй `src/state.py`, `src/graph.py`, `run.py` без согласования
 
-## Приоритеты по влиянию на ROC-AUC
+## Приоритеты
 
-1. 🔴 Ручные фичи в fallback (Участник 3) — самый быстрый прирост
-2. 🔴 EDA (Участник 1) — даёт инсайты для всех остальных
-3. 🟡 Улучшение промтов (Участник 2) — если LLM заработает, это +0.02-0.05
-4. 🟢 Тестирование (Участник 4) — страховка от провала на платформе
-5. 🟢 Сабмит (Участник 5) — финальный шаг
+1. 🔴 Промты FeatureCoder (Уч. 2) — LLM-фичи сейчас падают, это главная проблема
+2. 🔴 Промты FeatureIdeator (Уч. 1) — качество идей = качество фичей
+3. 🟡 Универсальный fallback (Уч. 3) — страховка
+4. 🟡 Тестирование (Уч. 4) — ловит баги до проверки
+5. 🟢 Сабмит (Уч. 5) — финальный шаг
