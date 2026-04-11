@@ -4,20 +4,30 @@ from pathlib import Path
 import pandas as pd
 
 from src.state import AgentState
+from src.utils.fallback_features import generate_fallback_features
 
 OUTPUT_DIR = Path("output")
 
 
 def run(state: AgentState) -> dict:
     best_idx = state["best_set_idx"]
-    df_train_out = state["computed_train_dfs"][best_idx]
-    df_test_out = state["computed_test_dfs"][best_idx]
+    df_train_out = None
+    df_test_out = None
 
+    if state["computed_train_dfs"]:
+        df_train_out = state["computed_train_dfs"][best_idx]
+        df_test_out = state["computed_test_dfs"][best_idx]
+
+    # Last-resort fallback: generate features directly if everything else failed
     if df_train_out is None or df_test_out is None:
-        raise RuntimeError(
-            f"Best feature set {best_idx + 1} is None — "
-            "all code generation attempts failed. Cannot produce output."
-        )
+        try:
+            df_train_out, df_test_out = generate_fallback_features(
+                state["df_train"], state["df_test"], state["extra_tables"], state["schema_info"]
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"All feature generation failed including fallback: {e}"
+            )
 
     id_column = state["schema_info"]["id_column"]
     target_column = state["schema_info"]["target_column"]
