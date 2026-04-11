@@ -88,8 +88,8 @@ def _build_extra_tables_info(schema: dict) -> str:
 
     parts = []
     for tname, tinfo in extra_schema.items():
-        # Only show tables that will be in sandbox (<=100K rows or pre-aggregated)
-        if tinfo["shape"][0] > 100_000:
+        # Only show tables that will be in sandbox (<=500K rows or pre-aggregated)
+        if tinfo["shape"][0] > 500_000:
             continue
         cols = tinfo["columns"]
         join_keys = tinfo["join_keys"]
@@ -116,12 +116,12 @@ def _extract_code(text: str) -> str:
 
 
 def _execute_code(code_str: str, state: AgentState):
-    # For heavy tables (>100K rows), only pass pre-aggregated versions to sandbox
+    # For heavy tables (>500K rows), only pass pre-aggregated versions to sandbox
+    # Threshold raised to 500K to include medium tables (like client_data ~40K)
     safe_tables = {}
     for k, v in state["extra_tables"].items():
-        if len(v) <= 100_000:
+        if len(v) <= 500_000:
             safe_tables[k] = v.copy()
-        # pre-aggregated tables (e.g. "order_items_by_product_id") are always small
     sandbox = {
         "df_train": state["df_train"].copy(),
         "df_test": state["df_test"].copy(),
