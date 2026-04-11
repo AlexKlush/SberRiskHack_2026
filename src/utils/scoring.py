@@ -16,26 +16,60 @@ def evaluate_features(df_train: pd.DataFrame, feature_cols: list, target_col: st
     return float(np.mean(scores))
 
 
+def _fast_evaluate(df_sample: pd.DataFrame, feature_cols: list, target_col: str) -> float:
+    """Fast evaluation on a sample with 3-fold CV for selection purposes."""
+    X = df_sample[feature_cols].fillna(0).values
+    y = df_sample[target_col].values
+
+    model = CatBoostClassifier(verbose=0, random_state=42, iterations=100)
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+    scores = cross_val_score(model, X, y, cv=cv, scoring="roc_auc")
+    return float(np.mean(scores))
+
+
 def forward_select_features(
     df_train: pd.DataFrame,
     candidate_cols: list,
     target_col: str,
     max_features: int = 5,
 ) -> list:
-    """Greedy forward selection: add features one by one, keep only if ROC-AUC improves."""
+    """Greedy forward selection on a subsample, then final scoring on full data."""
+    MAX_SAMPLE = 50_000
+    if len(df_train) > MAX_SAMPLE:
+        df_sample = df_train.sample(n=MAX_SAMPLE, random_state=42)
+    else:
+        df_sample = df_train
+
+    # Phase 1: score each feature individually, keep top 7
+    individual_scores = []
+    for col in candidate_cols:
+        try:
+            score = _fast_evaluate(df_sample, [col], target_col)
+            individual_scores.append((col, score))
+        except Exception:
+            individual_scores.append((col, 0.0))
+
+    individual_scores.sort(key=lambda x: x[1], reverse=True)
+    top_candidates = [col for col, _ in individual_scores[:7]]
+
+    print(f"  [Scoring] Individual scores: {[(c, f'{s:.4f}') for c, s in individual_scores]}")
+    print(f"  [Scoring] Top candidates for forward selection: {top_candidates}")
+
+    # Phase 2: forward selection on top candidates only
     selected = []
     best_score = 0.0
 
-    for _ in range(min(max_features, len(candidate_cols))):
+    for _ in range(min(max_features, len(top_candidates))):
         best_candidate = None
         best_candidate_score = best_score
 
-        for col in candidate_cols:
+        for col in top_candidates:
             if col in selected:
                 continue
             trial = selected + [col]
             try:
-                score = evaluate_features(df_train, trial, target_col)
+                score = _fast_evaluate(df_sample, trial, target_col)
             except Exception:
                 continue
 
@@ -48,5 +82,6 @@ def forward_select_features(
 
         selected.append(best_candidate)
         best_score = best_candidate_score
+        print(f"  [Scoring] +{best_candidate} -> ROC-AUC {best_score:.4f}")
 
     return selected

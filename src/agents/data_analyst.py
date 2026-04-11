@@ -85,6 +85,7 @@ def run(state: AgentState) -> dict:
     reserved_names = list(set(train_cols + test_cols))
 
     # Pre-aggregate heavy tables (>100K rows) to speed up sandbox execution
+    # Only aggregate by keys present in train/test (user_id, product_id)
     MAX_RAW_ROWS = 100_000
     for tname in list(extra_tables.keys()):
         tdf = extra_tables[tname]
@@ -92,18 +93,13 @@ def run(state: AgentState) -> dict:
             join_keys = [c for c in tdf.columns if c in train_cols or c in test_cols]
             if join_keys:
                 numeric_cols = tdf.select_dtypes(include="number").columns.tolist()
-                numeric_cols = [c for c in numeric_cols if c not in join_keys]
+                numeric_cols = [c for c in numeric_cols if c not in join_keys][:4]
                 if numeric_cols:
-                    agg_dict = {}
-                    for col in numeric_cols:
-                        agg_dict[f"{tname}_{col}_mean"] = (col, "mean")
-                        agg_dict[f"{tname}_{col}_std"] = (col, "std")
-                    agg_dict[f"{tname}_count"] = (numeric_cols[0], "count")
-                    for key in join_keys:
+                    for key in join_keys[:2]:
+                        agg_dict = {f"{tname}_{col}_mean": (col, "mean") for col in numeric_cols}
+                        agg_dict[f"{tname}_count"] = (numeric_cols[0], "count")
                         agg_df = tdf.groupby(key).agg(**agg_dict).reset_index()
                         extra_tables[f"{tname}_by_{key}"] = agg_df
-            # Keep original for fallback but note it's heavy
-            # Don't remove — LLM code might need raw access
 
     # Build detailed schema for extra tables so LLM knows what's available to join
     extra_tables_schema = {}
