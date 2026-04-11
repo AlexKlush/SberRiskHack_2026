@@ -15,9 +15,11 @@ SYSTEM_PROMPT = """\
 </role>
 <constraints>
 ОБЯЗАТЕЛЬНО:
-- Вычисляй агрегации ТОЛЬКО на df_train, применяй к df_test через merge/map
-- Обрабатывай NaN: fillna медианой train или -1
-- Итоговые df_train_out и df_test_out должны содержать только нужные колонки
+- Вычисляй агрегации ТОЛЬКО на df_train (или на доп. таблицах), применяй к df_test через merge/map
+- extra_tables — это dict[str, pd.DataFrame], доступ: extra_tables["table_name"]
+- Обрабатывай NaN: fillna медианой train или 0
+- Итоговые df_train_out и df_test_out должны содержать ТОЛЬКО нужные колонки
+- Каждый признак должен быть числовым (int или float)
 ЗАПРЕЩЕНО:
 - Использовать target_column при вычислении признаков
 - Вызывать .fit() на test данных
@@ -30,8 +32,11 @@ USER_PROMPT_TEMPLATE = """\
 <schema>
 id_column: {id_column}
 target_column: {target_column}
-available_columns: {columns_with_dtypes}
+train_test_columns: {columns_with_dtypes}
 </schema>
+<extra_tables>
+{extra_tables_info}
+</extra_tables>
 <feature_ideas>
 {feature_ideas_json}
 </feature_ideas>
@@ -43,6 +48,7 @@ available_columns: {columns_with_dtypes}
 def generate_features(df_train, df_test, extra_tables=None):
     import pandas as pd
     import numpy as np
+    # extra_tables — dict[str, pd.DataFrame], например extra_tables["users"]
     # реализуй признаки из feature_ideas
     # ...
     return df_train_out, df_test_out
@@ -50,6 +56,9 @@ def generate_features(df_train, df_test, extra_tables=None):
 - df_train_out колонки: [{id_column}, {target_column}, feature_1, ..., feature_N]
 - df_test_out колонки:  [{id_column}, feature_1, ..., feature_N]
 - Имена признаков должны совпадать в обоих df
+- Все признаки — числовые, без NaN
+ВАЖНО: вычисляй признаки одинаково для train и test. Агрегации считай по доп. таблицам
+(они одинаковы для train и test) или по df_train, затем merge к обоим.
 </task>
 <output_format>
 Верни ПОЛНУЮ функцию — включая строку def и return.
@@ -72,6 +81,25 @@ FIX_PROMPT_TEMPLATE = """\
 </task>"""
 
 
+def _build_extra_tables_info(schema: dict) -> str:
+    extra_schema = schema.get("extra_tables_schema", {})
+    if not extra_schema:
+        return "Нет дополнительных таблиц."
+
+    parts = []
+    for tname, tinfo in extra_schema.items():
+        cols = tinfo["columns"]
+        join_keys = tinfo["join_keys"]
+        shape = tinfo["shape"]
+        col_desc = ", ".join(f"{c} ({dtype})" for c, dtype in cols.items())
+        parts.append(
+            f"extra_tables[\"{tname}\"] [{shape[0]} rows x {shape[1]} cols]:\n"
+            f"  Колонки: {col_desc}\n"
+            f"  Join keys (общие с train/test): {join_keys}"
+        )
+    return "\n".join(parts)
+
+
 def _extract_code(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -86,7 +114,7 @@ def _execute_code(code_str: str, state: AgentState):
     sandbox = {
         "df_train": state["df_train"].copy(),
         "df_test": state["df_test"].copy(),
-        "extra_tables": state["extra_tables"],
+        "extra_tables": {k: v.copy() for k, v in state["extra_tables"].items()},
     }
     full_code = code_str.strip() + "\n\nresult = generate_features(df_train, df_test, extra_tables)"
     exec(full_code, sandbox)
@@ -100,10 +128,13 @@ def run(state: AgentState) -> dict:
         temperature=0.1,
         max_tokens=2000,
         verify_ssl_certs=False,
+        profanity_check=False,
+        scope="GIGACHAT_API_CORP",
         timeout=120,
     )
 
     columns_with_dtypes = json.dumps(schema["column_dtypes"], ensure_ascii=False)
+    extra_tables_info = _build_extra_tables_info(schema)
     test_warning = ""
     if not schema.get("test_has_features", True):
         test_warning = (
@@ -128,6 +159,7 @@ def run(state: AgentState) -> dict:
             id_column=schema["id_column"],
             target_column=schema["target_column"],
             columns_with_dtypes=columns_with_dtypes,
+            extra_tables_info=extra_tables_info,
             feature_ideas_json=feature_ideas_json,
             test_warning=test_warning,
         )
