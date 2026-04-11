@@ -88,6 +88,9 @@ def _build_extra_tables_info(schema: dict) -> str:
 
     parts = []
     for tname, tinfo in extra_schema.items():
+        # Only show tables that will be in sandbox (<=100K rows or pre-aggregated)
+        if tinfo["shape"][0] > 100_000:
+            continue
         cols = tinfo["columns"]
         join_keys = tinfo["join_keys"]
         shape = tinfo["shape"]
@@ -97,6 +100,8 @@ def _build_extra_tables_info(schema: dict) -> str:
             f"  Колонки: {col_desc}\n"
             f"  Join keys (общие с train/test): {join_keys}"
         )
+    if not parts:
+        return "Нет дополнительных таблиц доступных в sandbox."
     return "\n".join(parts)
 
 
@@ -111,10 +116,16 @@ def _extract_code(text: str) -> str:
 
 
 def _execute_code(code_str: str, state: AgentState):
+    # For heavy tables (>100K rows), only pass pre-aggregated versions to sandbox
+    safe_tables = {}
+    for k, v in state["extra_tables"].items():
+        if len(v) <= 100_000:
+            safe_tables[k] = v.copy()
+        # pre-aggregated tables (e.g. "order_items_by_product_id") are always small
     sandbox = {
         "df_train": state["df_train"].copy(),
         "df_test": state["df_test"].copy(),
-        "extra_tables": {k: v.copy() for k, v in state["extra_tables"].items()},
+        "extra_tables": safe_tables,
     }
     full_code = code_str.strip() + "\n\nresult = generate_features(df_train, df_test, extra_tables)"
     exec(full_code, sandbox)

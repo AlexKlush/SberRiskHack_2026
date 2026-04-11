@@ -37,9 +37,10 @@ def run(state: AgentState) -> dict:
     train_out.to_csv(OUTPUT_DIR / "train.csv", index=False)
     test_out.to_csv(OUTPUT_DIR / "test.csv", index=False)
 
-    cv_score = state["cv_scores"][best_idx]
+    # Final score is the last element (mixed/selected score from evaluator)
+    cv_scores = state["cv_scores"]
+    cv_score = cv_scores[-1] if cv_scores else 0.0
     print(f"\n{'='*50}")
-    print(f"  Selected set: {best_idx + 1}")
     print(f"  ROC-AUC:      {cv_score:.4f}")
     print(f"  Features:     {feature_cols}")
     print(f"  Train shape:  {train_out.shape}")

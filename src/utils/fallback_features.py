@@ -9,7 +9,7 @@ def generate_fallback_features(
     extra_tables: dict,
     schema_info: dict,
 ) -> tuple:
-    """Generate basic features from extra tables without LLM. Returns (df_train_out, df_test_out)."""
+    """Generate features from extra tables without LLM. Returns (df_train_out, df_test_out)."""
     id_column = schema_info["id_column"]
     target_column = schema_info["target_column"]
 
@@ -18,62 +18,98 @@ def generate_fallback_features(
 
     features_added = []
 
-    # --- Features from users table ---
-    if "users" in extra_tables:
-        users = extra_tables["users"]
-        if "user_id" in df_train.columns and "user_id" in users.columns:
-            user_cols = [c for c in users.columns if c != "user_id"]
-            for col in user_cols[:5]:
-                feat_name = f"user_{col}"
-                mapping = users.set_index("user_id")[col]
-                train_out[feat_name] = df_train["user_id"].map(mapping)
-                test_out[feat_name] = df_test["user_id"].map(mapping)
-                features_added.append(feat_name)
+    def _add_feature(name, train_series, test_series):
+        train_out[name] = train_series.values
+        test_out[name] = test_series.values
+        features_added.append(name)
 
-    # --- Features from order_items table ---
+    # --- 1. User features from users.csv ---
+    if "users" in extra_tables and "user_id" in df_train.columns:
+        users = extra_tables["users"]
+        if "user_id" in users.columns:
+            useful_cols = ["total_orders", "reordered_share", "total_distinct_products",
+                           "avg_days_between_orders", "avg_basket_size"]
+            for col in useful_cols:
+                if col in users.columns:
+                    mapping = users.set_index("user_id")[col]
+                    _add_feature(
+                        f"user_{col}",
+                        df_train["user_id"].map(mapping).fillna(0),
+                        df_test["user_id"].map(mapping).fillna(0),
+                    )
+
+    # --- 2. Product reorder stats from order_items ---
     if "order_items" in extra_tables and "product_id" in df_train.columns:
         oi = extra_tables["order_items"]
-        if "product_id" in oi.columns:
-            prod_stats = oi.groupby("product_id").agg(
-                fb_prod_order_count=("order_id", "nunique") if "order_id" in oi.columns else ("product_id", "count"),
-            )
-            if "reordered" in oi.columns:
-                prod_reorder = oi.groupby("product_id")["reordered"].mean()
-                prod_stats["fb_prod_reorder_rate"] = prod_reorder
+        if "product_id" in oi.columns and "reordered" in oi.columns:
+            prod_reorder = oi.groupby("product_id")["reordered"].agg(["mean", "count"])
+            prod_reorder.columns = ["fb_prod_reorder_rate", "fb_prod_order_count"]
+            for col in prod_reorder.columns:
+                mapping = prod_reorder[col]
+                _add_feature(
+                    col,
+                    df_train["product_id"].map(mapping).fillna(0),
+                    df_test["product_id"].map(mapping).fillna(0),
+                )
 
-            for col in prod_stats.columns:
-                train_out[col] = df_train["product_id"].map(prod_stats[col])
-                test_out[col] = df_test["product_id"].map(prod_stats[col])
-                features_added.append(col)
-
-    # --- Features from orders table ---
-    if "orders" in extra_tables and "user_id" in df_train.columns:
+    # --- 3. User-product interaction from order_items ---
+    if "order_items" in extra_tables and "orders" in extra_tables:
+        oi = extra_tables["order_items"]
         orders = extra_tables["orders"]
-        if "user_id" in orders.columns:
-            user_order_stats = orders.groupby("user_id").agg(
-                fb_user_order_count=("order_id", "nunique") if "order_id" in orders.columns else ("user_id", "count"),
+        if "order_id" in oi.columns and "order_id" in orders.columns and "user_id" in orders.columns:
+            oi_with_user = oi.merge(orders[["order_id", "user_id"]], on="order_id", how="left")
+
+            if "product_id" in oi_with_user.columns:
+                # How many times this user bought this product before
+                user_prod_counts = oi_with_user.groupby(["user_id", "product_id"]).size().reset_index(name="fb_user_prod_count")
+                for df, label in [(df_train, "train"), (df_test, "test")]:
+                    merged = df[["user_id", "product_id"]].merge(
+                        user_prod_counts, on=["user_id", "product_id"], how="left"
+                    )
+                    if label == "train":
+                        train_out["fb_user_prod_count"] = merged["fb_user_prod_count"].fillna(0).values
+                    else:
+                        test_out["fb_user_prod_count"] = merged["fb_user_prod_count"].fillna(0).values
+                features_added.append("fb_user_prod_count")
+
+                # How many distinct products this user bought / product popularity ratio
+                user_total = oi_with_user.groupby("user_id")["product_id"].nunique()
+                prod_total = oi_with_user.groupby("product_id")["user_id"].nunique()
+
+                _add_feature(
+                    "fb_user_nunique_products",
+                    df_train["user_id"].map(user_total).fillna(0),
+                    df_test["user_id"].map(user_total).fillna(0),
+                )
+                _add_feature(
+                    "fb_prod_nunique_users",
+                    df_train["product_id"].map(prod_total).fillna(0),
+                    df_test["product_id"].map(prod_total).fillna(0),
+                )
+
+    # --- 4. Product category features ---
+    if "products" in extra_tables and "product_id" in df_train.columns:
+        products = extra_tables["products"]
+        if "product_id" in products.columns and "aisle_id" in products.columns:
+            mapping = products.set_index("product_id")["aisle_id"]
+            _add_feature(
+                "fb_prod_aisle_id",
+                df_train["product_id"].map(mapping).fillna(0),
+                df_test["product_id"].map(mapping).fillna(0),
             )
-            if "days_since_prior_order" in orders.columns:
-                user_days = orders.groupby("user_id")["days_since_prior_order"].mean()
-                user_order_stats["fb_user_avg_days"] = user_days
 
-            for col in user_order_stats.columns:
-                if col not in features_added:
-                    train_out[col] = df_train["user_id"].map(user_order_stats[col])
-                    test_out[col] = df_test["user_id"].map(user_order_stats[col])
-                    features_added.append(col)
-
-    # --- Frequency encoding for key columns ---
+    # --- 5. Frequency encoding ---
     for col in ["user_id", "product_id"]:
         if col in df_train.columns:
-            feat_name = f"fb_{col}_freq"
             freq = df_train[col].value_counts(normalize=True)
-            train_out[feat_name] = df_train[col].map(freq)
-            test_out[feat_name] = df_test[col].map(freq).fillna(0)
-            features_added.append(feat_name)
+            _add_feature(
+                f"fb_{col}_freq",
+                df_train[col].map(freq).fillna(0),
+                df_test[col].map(freq).fillna(0),
+            )
 
-    # Keep only top 5 features
-    feature_cols = [c for c in features_added if c in train_out.columns][:5]
+    # Deduplicate and limit to available columns
+    feature_cols = [c for c in features_added if c in train_out.columns and c in test_out.columns]
     train_out = train_out[[id_column, target_column] + feature_cols]
     test_out = test_out[[id_column] + feature_cols]
 
