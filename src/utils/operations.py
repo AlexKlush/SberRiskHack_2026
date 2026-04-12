@@ -23,10 +23,11 @@ def freq_encode(df_train, df_test, column, **kw):
     return name, tr, te
 
 
-def target_encode(df_train, df_test, column, target_col, smoothing=20, **kw):
+def target_encode(df_train, df_test, column, target_col, **kw):
     """Smoothed target-mean encoding (no leakage — global mean as prior)."""
     if column not in df_train.columns:
         return None, None, None
+    smoothing = max(20, min(200, len(df_train) // 100))
     gm = df_train[target_col].mean()
     stats = df_train.groupby(column)[target_col].agg(["mean", "count"])
     stats["s"] = (stats["count"] * stats["mean"] + smoothing * gm) / (stats["count"] + smoothing)
@@ -206,13 +207,14 @@ def extra_freq_encode(df_train, df_test, extra_tables, table, key, column, **kw)
 
 
 def extra_target_encode(df_train, df_test, extra_tables, table, key, column,
-                        target_col, smoothing=20, **kw):
+                        target_col, **kw):
     """Smoothed target encoding of a categorical column from an extra table."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
     if key not in tdf.columns or column not in tdf.columns or key not in df_train.columns:
         return None, None, None
+    smoothing = max(20, min(200, len(df_train) // 100))
     # Map key -> column value
     mapping = tdf.drop_duplicates(key).set_index(key)[column]
     train_vals = df_train[key].map(mapping)
@@ -228,6 +230,38 @@ def extra_target_encode(df_train, df_test, extra_tables, table, key, column,
         te = test_vals.map(te_map).fillna(gm).values
     else:
         te = np.full(len(df_test), gm)
+    return name, tr, te
+
+
+def cross_agg(df_train, df_test, extra_tables, table, keys, column, func, **kw):
+    """Aggregate a column from an extra table grouped by composite key."""
+    if table not in extra_tables:
+        return None, None, None
+    tdf = extra_tables[table]
+    if not isinstance(keys, list) or len(keys) < 2:
+        return None, None, None
+    for k in keys:
+        if k not in tdf.columns or k not in df_train.columns:
+            return None, None, None
+    if column not in tdf.columns:
+        return None, None, None
+    agg_funcs = {"mean": "mean", "std": "std", "sum": "sum", "max": "max",
+                 "min": "min", "count": "count", "nunique": "nunique", "median": "median"}
+    if func not in agg_funcs:
+        return None, None, None
+    grouped = tdf.groupby(keys)[column].agg(agg_funcs[func]).reset_index()
+    grouped.columns = list(keys) + ["__val__"]
+    name = f"fe_cross_{'_'.join(keys)}_{table}_{column}_{func}"
+    tr = df_train[keys].merge(grouped, on=keys, how="left")["__val__"].fillna(0).values
+    if len(tr) != len(df_train):
+        return None, None, None
+    test_keys_ok = all(k in df_test.columns for k in keys)
+    if test_keys_ok:
+        te = df_test[keys].merge(grouped, on=keys, how="left")["__val__"].fillna(0).values
+        if len(te) != len(df_test):
+            return None, None, None
+    else:
+        te = np.zeros(len(df_test))
     return name, tr, te
 
 
@@ -267,6 +301,7 @@ OPERATIONS = {
     "EXTRA_FREQ_ENCODE": extra_freq_encode,
     "EXTRA_TARGET_ENCODE": extra_target_encode,
     "EXTRA_LABEL_ENCODE": extra_label_encode,
+    "CROSS_AGG": cross_agg,
 }
 
 
