@@ -89,13 +89,36 @@ def _detect_separator(path):
     return ","
 
 
+def _safe_read_csv(path):
+    """Read CSV robustly: try comma first, then auto-detect separator."""
+    for sep in [",", ";", "\t", None]:
+        try:
+            kw = {"encoding": "utf-8-sig"}
+            if sep is None:
+                kw["sep"] = sep
+                kw["engine"] = "python"
+            else:
+                kw["sep"] = sep
+            df = pd.read_csv(path, **kw)
+            if len(df.columns) >= 1:
+                return df
+        except Exception:
+            continue
+    # Last resort
+    return pd.read_csv(path)
+
+
 def run(state: AgentState) -> dict:
     print("  [DataAnalyst] Reading data files...")
     train_path = DATA_DIR / "train.csv"
     test_path = DATA_DIR / "test.csv"
 
-    df_train = pd.read_csv(train_path, sep=None, engine="python")
-    df_test = pd.read_csv(test_path, sep=None, engine="python")
+    df_train = _safe_read_csv(train_path)
+    df_test = _safe_read_csv(test_path)
+
+    # Sanitize column names: strip whitespace, BOM, invisible chars
+    df_train.columns = [c.strip().strip("\ufeff") for c in df_train.columns]
+    df_test.columns = [c.strip().strip("\ufeff") for c in df_test.columns]
     print(f"  [DataAnalyst] train: {df_train.shape}, test: {df_test.shape}")
 
     # Load extra tables
@@ -104,7 +127,8 @@ def run(state: AgentState) -> dict:
         if csv_file.name in ("train.csv", "test.csv"):
             continue
         try:
-            tdf = pd.read_csv(csv_file, sep=None, engine="python")
+            tdf = _safe_read_csv(csv_file)
+            tdf.columns = [c.strip().strip("\ufeff") for c in tdf.columns]
             extra_tables[csv_file.stem] = tdf
             print(f"  [DataAnalyst] extra: {csv_file.stem} {tdf.shape}")
         except Exception as e:
