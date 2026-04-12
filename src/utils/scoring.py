@@ -41,7 +41,7 @@ def forward_select_features(
     else:
         df_sample = df_train
 
-    # Phase 1: score each feature individually, keep top 7
+    # Phase 1: score each feature individually, keep top 10
     individual_scores = []
     for col in candidate_cols:
         try:
@@ -51,18 +51,18 @@ def forward_select_features(
             individual_scores.append((col, 0.0))
 
     individual_scores.sort(key=lambda x: x[1], reverse=True)
-    top_candidates = [col for col, _ in individual_scores[:7]]
+    top_candidates = [col for col, _ in individual_scores[:10]]
 
     print(f"  [Scoring] Individual scores: {[(c, f'{s:.4f}') for c, s in individual_scores]}")
     print(f"  [Scoring] Top candidates for forward selection: {top_candidates}")
 
-    # Phase 2: forward selection on top candidates only
+    # Phase 2: greedy forward selection
     selected = []
     best_score = 0.0
 
-    for _ in range(min(max_features, len(top_candidates))):
+    for step in range(min(max_features, len(top_candidates))):
         best_candidate = None
-        best_candidate_score = best_score
+        best_candidate_score = -1.0  # accept any feature, even if no improvement
 
         for col in top_candidates:
             if col in selected:
@@ -83,5 +83,13 @@ def forward_select_features(
         selected.append(best_candidate)
         best_score = best_candidate_score
         print(f"  [Scoring] +{best_candidate} -> ROC-AUC {best_score:.4f}")
+
+    # Phase 3: if < max_features selected, fill from top individual scorers
+    if len(selected) < max_features:
+        for col, _ in individual_scores:
+            if col not in selected:
+                selected.append(col)
+            if len(selected) >= max_features:
+                break
 
     return selected

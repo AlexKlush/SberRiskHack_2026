@@ -33,18 +33,18 @@ def main():
         "df_train": None,
         "df_test": None,
         "extra_tables": {},
-        "feature_ideas": [],
-        "generated_code": [],
-        "computed_train_dfs": [],
-        "computed_test_dfs": [],
-        "cv_scores": [],
-        "best_set_idx": 0,
+        "candidate_features_train": None,
+        "candidate_features_test": None,
+        "candidate_names": [],
+        "selected_features": [],
+        "cv_score": 0.0,
         "errors_log": [],
     }
     graph.invoke(initial_state)
     if sys.platform != "win32":
         signal.alarm(0)
-    print(f" \u2713 Done in {time.time()-start:.1f}s")
+    elapsed = time.time() - start
+    print(f" \u2713 Done in {elapsed:.1f}s ({elapsed/60:.1f} min)")
 
 
 if __name__ == "__main__":
