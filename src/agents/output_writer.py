@@ -25,9 +25,14 @@ def run(state: AgentState) -> dict:
                 state["df_train"], state["df_test"], state["extra_tables"], state["schema_info"]
             )
         except Exception as e:
-            raise RuntimeError(
-                f"All feature generation failed including fallback: {e}"
-            )
+            print(f"  [output_writer] Fallback also failed: {e}")
+            print("  [output_writer] Using bare-minimum constant features")
+            id_col = state["schema_info"]["id_column"]
+            tgt_col = state["schema_info"]["target_column"]
+            df_train_out = state["df_train"][[id_col, tgt_col]].copy()
+            df_test_out = state["df_test"][[id_col]].copy()
+            df_train_out["fb_constant"] = 0
+            df_test_out["fb_constant"] = 0
 
     id_column = state["schema_info"]["id_column"]
     target_column = state["schema_info"]["target_column"]

@@ -33,68 +33,78 @@ def generate_fallback_features(
     # --- 2. Merge features from extra tables ---
     # IMPORTANT: use id_column as join key too — some datasets have all features in extra tables
     for tname, tdf in extra_tables.items():
-        if len(tdf) > 500_000:
-            continue
+        try:
+            if len(tdf) > 500_000:
+                continue
 
-        # Find join keys: columns shared between this table and train (INCLUDING id_column)
-        shared_keys = [c for c in tdf.columns if c in df_train.columns and c != target_column]
-        if not shared_keys:
-            continue
+            # Find join keys: columns shared between this table and train (INCLUDING id_column)
+            shared_keys = [c for c in tdf.columns if c in df_train.columns and c != target_column]
+            if not shared_keys:
+                continue
 
-        join_key = shared_keys[0]
+            # Prefer id_column as join key if available in this table
+            join_key = id_column if id_column in shared_keys else shared_keys[0]
 
-        # Get numeric columns from extra table (exclude join keys and garbage columns)
-        numeric_cols = tdf.select_dtypes(include="number").columns.tolist()
-        numeric_cols = [c for c in numeric_cols if c not in shared_keys
-                        and c != target_column
-                        and not c.startswith("Unnamed")]
+            # Get numeric columns from extra table (exclude join keys and garbage columns)
+            numeric_cols = tdf.select_dtypes(include="number").columns.tolist()
+            numeric_cols = [c for c in numeric_cols if c not in shared_keys
+                            and c != target_column
+                            and not c.startswith("Unnamed")]
 
-        # Get categorical columns for encoding
-        cat_cols = tdf.select_dtypes(include=["object", "string", "category"]).columns.tolist()
-        cat_cols = [c for c in cat_cols if c not in shared_keys and c != target_column]
+            # Get categorical columns for encoding
+            cat_cols = tdf.select_dtypes(include=["object", "string", "category"]).columns.tolist()
+            cat_cols = [c for c in cat_cols if c not in shared_keys and c != target_column]
 
-        # Numeric features: direct merge if 1-to-1, otherwise aggregate
-        is_unique_key = tdf[join_key].nunique() == len(tdf)
+            # Numeric features: direct map if 1-to-1, otherwise aggregate
+            is_unique_key = tdf[join_key].nunique() == len(tdf)
 
-        if is_unique_key:
-            # 1-to-1 mapping: merge directly (e.g. client_data keyed by client_id)
-            merge_cols = numeric_cols[:8]
-            if merge_cols:
-                subset = tdf[[join_key] + merge_cols].copy()
-                rename_map = {c: f"fb_{tname}_{c}" for c in merge_cols}
-                subset = subset.rename(columns=rename_map)
-                train_out = train_out.merge(subset, on=join_key, how="left")
-                test_out = test_out.merge(subset, on=join_key, how="left")
-                features_added.extend(rename_map.values())
+            if is_unique_key:
+                # 1-to-1 mapping: use map() via df_train/df_test (not merge on train_out)
+                indexed = tdf.set_index(join_key)
+                for col in numeric_cols[:8]:
+                    feat_name = f"fb_{tname}_{col}"
+                    mapping = indexed[col]
+                    train_out[feat_name] = df_train[join_key].map(mapping).fillna(0).values
+                    if join_key in df_test.columns:
+                        test_out[feat_name] = df_test[join_key].map(mapping).fillna(0).values
+                    else:
+                        test_out[feat_name] = 0
+                    features_added.append(feat_name)
 
-            # Categorical features: label encode
-            for col in cat_cols[:5]:
-                feat_name = f"fb_{tname}_{col}_enc"
-                label_map = {v: i for i, v in enumerate(tdf[col].dropna().unique())}
-                encoded = tdf.set_index(join_key)[col].map(label_map)
-                train_out[feat_name] = df_train[join_key].map(encoded).fillna(-1).values
-                test_out[feat_name] = df_test[join_key].map(encoded).fillna(-1).values
-                features_added.append(feat_name)
-        else:
-            # Many-to-1: aggregate
-            for col in numeric_cols[:3]:
-                feat_name = f"fb_{tname}_{col}_mean"
-                mapping = tdf.groupby(join_key)[col].mean()
-                train_out[feat_name] = df_train[join_key].map(mapping).fillna(0).values
+                # Categorical features: label encode
+                for col in cat_cols[:5]:
+                    feat_name = f"fb_{tname}_{col}_enc"
+                    label_map = {v: i for i, v in enumerate(tdf[col].dropna().unique())}
+                    encoded = indexed[col].map(label_map)
+                    train_out[feat_name] = df_train[join_key].map(encoded).fillna(-1).values
+                    if join_key in df_test.columns:
+                        test_out[feat_name] = df_test[join_key].map(encoded).fillna(-1).values
+                    else:
+                        test_out[feat_name] = -1
+                    features_added.append(feat_name)
+            else:
+                # Many-to-1: aggregate
+                for col in numeric_cols[:3]:
+                    feat_name = f"fb_{tname}_{col}_mean"
+                    mapping = tdf.groupby(join_key)[col].mean()
+                    train_out[feat_name] = df_train[join_key].map(mapping).fillna(0).values
+                    if join_key in df_test.columns:
+                        test_out[feat_name] = df_test[join_key].map(mapping).fillna(0).values
+                    else:
+                        test_out[feat_name] = 0
+                    features_added.append(feat_name)
+
+                feat_name = f"fb_{tname}_count"
+                counts = tdf.groupby(join_key).size()
+                train_out[feat_name] = df_train[join_key].map(counts).fillna(0).values
                 if join_key in df_test.columns:
-                    test_out[feat_name] = df_test[join_key].map(mapping).fillna(0).values
+                    test_out[feat_name] = df_test[join_key].map(counts).fillna(0).values
                 else:
                     test_out[feat_name] = 0
                 features_added.append(feat_name)
-
-            feat_name = f"fb_{tname}_count"
-            counts = tdf.groupby(join_key).size()
-            train_out[feat_name] = df_train[join_key].map(counts).fillna(0).values
-            if join_key in df_test.columns:
-                test_out[feat_name] = df_test[join_key].map(counts).fillna(0).values
-            else:
-                test_out[feat_name] = 0
-            features_added.append(feat_name)
+        except Exception as e:
+            print(f"  [fallback] Skipping table '{tname}': {e}")
+            continue
 
     # --- 3. Target-mean encoding per key columns (smoothed) ---
     # Include id_column if it's a reasonable grouping key
