@@ -4,7 +4,6 @@ import pandas as pd
 from catboost import CatBoostClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
-# Параметры CatBoost из скрипта организаторов
 CATBOOST_PARAMS = {
     "iterations": 300,
     "learning_rate": 0.05,

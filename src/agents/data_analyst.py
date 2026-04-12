@@ -51,7 +51,8 @@ def _find_target_column(df_train, df_test, id_column, readme_text):
 
     # Известные названия таргета
     target_names = ["target", "label", "y", "class", "is_fraud", "default",
-                    "churn", "is_default", "fraud", "outcome", "result", "flag"]
+                    "default_flag", "churn", "is_default", "fraud", "outcome",
+                    "result", "flag"]
     for name in target_names:
         if name in train_cols and name != id_column:
             return name
@@ -100,7 +101,7 @@ def _safe_read_csv(path):
             else:
                 kw["sep"] = sep
             df = pd.read_csv(path, **kw)
-            if len(df.columns) >= 1:
+            if len(df.columns) >= 2:
                 return df
         except Exception:
             continue

@@ -260,6 +260,8 @@ def _generate_auto_pool(schema, df_train, df_test, extra_tables):
         if not pd.api.types.is_numeric_dtype(df_train[col]):
             ops.append({"op": "LABEL_ENCODE", "column": col})
 
+    # Всё остальное (INTERACTION, AGG, COUNT, DIRECT_NUMERIC, EXTRA_*, ...)
+    # оставляем на решение LLM — это его зона ответственности
 
     return ops
 
@@ -348,11 +350,16 @@ def run(state: AgentState) -> dict:
         name, tr_vals, te_vals = result
         if name in candidate_names or name in (id_col, target_col):
             continue
-        # Пропускаем фичи с нулевой дисперсией
-        if np.std(tr_vals) < 1e-12:
+        # Пропускаем нечисловые и фичи с нулевой дисперсией
+        try:
+            tr_arr = np.asarray(tr_vals, dtype=float)
+            te_arr = np.asarray(te_vals, dtype=float)
+        except (ValueError, TypeError):
             continue
-        train_out[name] = tr_vals
-        test_out[name] = te_vals
+        if np.std(np.nan_to_num(tr_arr)) < 1e-12:
+            continue
+        train_out[name] = tr_arr
+        test_out[name] = te_arr
         candidate_names.append(name)
 
     print(f"  [FeatureEngineer] Round 1 candidates: {len(candidate_names)}")
@@ -424,10 +431,15 @@ def run(state: AgentState) -> dict:
                 name, tr_vals, te_vals = result
                 if name in candidate_names or name in (id_col, target_col):
                     continue
-                if np.std(tr_vals) < 1e-12:
+                try:
+                    tr_arr = np.asarray(tr_vals, dtype=float)
+                    te_arr = np.asarray(te_vals, dtype=float)
+                except (ValueError, TypeError):
                     continue
-                train_out[name] = tr_vals
-                test_out[name] = te_vals
+                if np.std(np.nan_to_num(tr_arr)) < 1e-12:
+                    continue
+                train_out[name] = tr_arr
+                test_out[name] = te_arr
                 candidate_names.append(name)
 
             print(f"  [FeatureEngineer] Total candidates after round 2: {len(candidate_names)}")
