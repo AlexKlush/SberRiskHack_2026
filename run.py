@@ -44,7 +44,7 @@ def main():
     if sys.platform != "win32":
         signal.alarm(0)
     elapsed = time.time() - start
-    print(f" \u2713 Done in {elapsed:.1f}s ({elapsed/60:.1f} min)")
+    print(f" Done in {elapsed:.1f}s ({elapsed/60:.1f} min)")
 
 
 if __name__ == "__main__":
