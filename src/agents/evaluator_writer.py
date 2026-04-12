@@ -15,6 +15,12 @@ def run(state: AgentState) -> dict:
     id_col = schema["id_column"]
     target_col = schema["target_column"]
 
+    # Робастное определение ID-колонки в test
+    if id_col not in state["df_test"].columns:
+        test_id_col = state["df_test"].columns[0]
+    else:
+        test_id_col = id_col
+
     train_df = state["candidate_features_train"]
     test_df = state["candidate_features_test"]
     candidates = list(state["candidate_names"])
@@ -23,7 +29,7 @@ def run(state: AgentState) -> dict:
     if not candidates or train_df is None or test_df is None:
         state["errors_log"].append("CRITICAL: no candidate features")
         train_out = state["df_train"][[id_col, target_col]].copy()
-        test_out = state["df_test"][[id_col]].copy()
+        test_out = state["df_test"][[test_id_col]].rename(columns={test_id_col: id_col}).copy()
         train_out["fb_constant"] = 0
         test_out["fb_constant"] = 0
         _save(train_out, test_out, ["fb_constant"], 0.0)
@@ -51,7 +57,10 @@ def run(state: AgentState) -> dict:
 
     # Формируем и сохраняем результат
     train_out = train_df[[id_col, target_col] + selected].copy()
-    test_out = test_df[[id_col] + selected].copy()
+    test_id = id_col if id_col in test_df.columns else test_df.columns[0]
+    test_out = test_df[[test_id] + selected].copy()
+    if test_id != id_col:
+        test_out = test_out.rename(columns={test_id: id_col})
     train_out[selected] = train_out[selected].fillna(0)
     test_out[selected] = test_out[selected].fillna(0)
 

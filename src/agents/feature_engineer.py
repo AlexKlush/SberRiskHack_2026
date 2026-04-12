@@ -315,6 +315,13 @@ def run(state: AgentState) -> dict:
     id_col = schema["id_column"]
     target_col = schema["target_column"]
 
+    # Робастное определение ID-колонки в test (может отличаться от train)
+    if id_col not in state["df_test"].columns:
+        test_id_col = state["df_test"].columns[0]
+        print(f"  [FeatureEngineer] WARNING: '{id_col}' not in test, using '{test_id_col}'")
+    else:
+        test_id_col = id_col
+
     # --- Фаза 1: LLM предлагает операции ---
     llm_ops = []
     try:
@@ -377,7 +384,9 @@ def run(state: AgentState) -> dict:
     print(f"  [FeatureEngineer] Unique operations to execute: {len(unique_ops)}")
 
     train_out = state["df_train"][[id_col, target_col]].copy()
-    test_out = state["df_test"][[id_col]].copy()
+    test_out = state["df_test"][[test_id_col]].copy()
+    if test_id_col != id_col:
+        test_out = test_out.rename(columns={test_id_col: id_col})
     candidate_names = []
 
     # Passthrough: исходные числовые столбцы train как кандидаты
