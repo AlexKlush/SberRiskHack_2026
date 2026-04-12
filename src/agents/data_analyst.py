@@ -14,17 +14,24 @@ def _find_id_column(df_train, df_test, readme_text):
     test_cols = list(df_test.columns)
     common_cols = [c for c in train_cols if c in test_cols]
 
-    # Если общих колонок нет — пробуем case-insensitive матч
-    if not common_cols:
-        test_lower = {c.lower().strip(): c for c in test_cols}
-        for tc in train_cols:
-            matched = test_lower.get(tc.lower().strip())
-            if matched:
-                # Переименовываем колонку в test чтобы совпадала с train
-                df_test.rename(columns={matched: tc}, inplace=True)
-                common_cols.append(tc)
-        if common_cols:
-            print(f"  [DataAnalyst] Fixed column name mismatch, common: {common_cols[:5]}")
+    # ВСЕГДА пробуем case-insensitive матч для ещё не совпавших колонок
+    already_matched = set(common_cols)
+    test_lower = {}
+    for c in test_cols:
+        if c not in already_matched:
+            test_lower[c.lower().strip()] = c
+    renamed_count = 0
+    for tc in train_cols:
+        if tc in already_matched:
+            continue
+        matched = test_lower.get(tc.lower().strip())
+        if matched:
+            df_test.rename(columns={matched: tc}, inplace=True)
+            common_cols.append(tc)
+            already_matched.add(tc)
+            renamed_count += 1
+    if renamed_count > 0:
+        print(f"  [DataAnalyst] Fixed {renamed_count} column name mismatches, common: {common_cols[:5]}")
 
     # Ищем столбец с "id" в названии
     id_keywords = ["_id", "id_", "row_id", "client_id", "sample_id", "index",
@@ -68,13 +75,33 @@ def _find_target_column(df_train, df_test, id_column, readme_text):
 
     # Столбцы в train, которых нет в test — самый надёжный признак
     candidates = [c for c in train_cols if c not in test_cols and c != id_column]
-    if candidates:
+
+    # Если кандидат один — точно он
+    if len(candidates) == 1:
         return candidates[0]
 
-    # Известные названия таргета
+    # Если кандидатов несколько — сначала ищем по известным именам среди них
     target_names = ["target", "label", "y", "class", "is_fraud", "default",
                     "default_flag", "churn", "is_default", "fraud", "outcome",
                     "result", "flag"]
+    if candidates:
+        for name in target_names:
+            if name in candidates:
+                return name
+        # Среди кандидатов ищем бинарный столбец (0/1)
+        for c in candidates:
+            if df_train[c].dtype in ("int64", "float64"):
+                vals = set(df_train[c].dropna().unique())
+                if vals <= {0, 1, 0.0, 1.0}:
+                    return c
+        # Fallback: первый кандидат (не id-подобный)
+        for c in candidates:
+            cl = c.lower()
+            if not (cl == "id" or "_id" in cl or "id_" in cl):
+                return c
+        return candidates[0]
+
+    # Нет кандидатов (target есть и в train и в test) — ищем по имени
     for name in target_names:
         if name in train_cols and name != id_column:
             return name
@@ -175,6 +202,9 @@ def run(state: AgentState) -> dict:
     id_column = _find_id_column(df_train, df_test, readme_text)
     target_column = _find_target_column(df_train, df_test, id_column, readme_text)
     print(f"  [DataAnalyst] id_column={id_column}, target_column={target_column}")
+
+    # Обновляем test_cols после возможных переименований в _find_id_column
+    test_cols = list(df_test.columns)
 
     test_has_features = any(
         c not in (id_column, target_column) for c in test_cols
