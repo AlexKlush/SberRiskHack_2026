@@ -1,5 +1,5 @@
-"""FeatureEngineer agent — LLM picks operations from a fixed menu, then
-an automatic pool of candidates is added.  No exec(), no sandbox."""
+"""Агент FeatureEngineer — LLM выбирает операции из меню,
+затем формируется автоматический пул кандидатов. Без exec(), без sandbox."""
 import json
 from itertools import combinations
 
@@ -12,7 +12,7 @@ from src.state import AgentState
 from src.utils.operations import execute_operation
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Промпты
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
@@ -151,11 +151,11 @@ OPERATIONS_MENU_TEXT = """\
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 def _parse_llm_json(text: str) -> list:
-    """Parse LLM response, stripping markdown fences if present."""
+    """Парсим ответ LLM, убираем markdown-обёртку если есть."""
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
@@ -166,6 +166,7 @@ def _parse_llm_json(text: str) -> list:
     return result if isinstance(result, list) else []
 
 def _build_extra_tables_info(schema: dict) -> str:
+    """Формируем описание доп. таблиц для промпта."""
     extra_schema = schema.get("extra_tables_schema", {})
     if not extra_schema:
         return "Нет дополнительных таблиц."
@@ -186,39 +187,39 @@ def _build_extra_tables_info(schema: dict) -> str:
 
 
 def _generate_auto_pool(schema, df_train, df_test, extra_tables):
-    """Build a deterministic set of candidate operations regardless of LLM."""
+    """Детерминированный набор кандидатов независимо от LLM."""
     ops = []
     id_col = schema["id_column"]
     target_col = schema["target_column"]
     feature_cols = [c for c in df_train.columns if c not in (id_col, target_col)]
 
-    # --- From train columns ---
+    # Фичи из столбцов train
     for col in feature_cols:
         nunique = df_train[col].nunique()
         n = len(df_train)
-        # Frequency encoding for low/mid cardinality
+        # Частотное кодирование для низкой/средней кардинальности
         if nunique < n * 0.5:
             ops.append({"op": "FREQ_ENCODE", "column": col})
-        # Target encoding for medium cardinality
+        # Таргет-кодирование для средней кардинальности
         if 2 < nunique < n * 0.3:
             ops.append({"op": "TARGET_ENCODE", "column": col})
-        # Null indicator
+        # Индикатор пропусков
         if df_train[col].isna().sum() > 0:
             ops.append({"op": "IS_NULL", "column": col})
-        # Label encode for categoricals
+        # Label-кодирование для категорий
         if not pd.api.types.is_numeric_dtype(df_train[col]):
             ops.append({"op": "LABEL_ENCODE", "column": col})
 
-    # --- INTERACTION between numeric train features (capped to avoid explosion) ---
+    # Взаимодействия числовых столбцов (ограничиваем чтобы не раздувать пул)
     numeric_features = [c for c in feature_cols
                         if pd.api.types.is_numeric_dtype(df_train[c])]
     if len(numeric_features) >= 2:
-        pairs = list(combinations(numeric_features[:6], 2))  # max 15 pairs
-        for c1, c2 in pairs[:10]:  # max 10 interactions total
+        pairs = list(combinations(numeric_features[:6], 2))
+        for c1, c2 in pairs[:10]:
             ops.append({"op": "INTERACTION", "col1": c1,
                         "op_type": "mul", "col2": c2})
 
-    # --- From extra tables ---
+    # Фичи из дополнительных таблиц
     extra_schema = schema.get("extra_tables_schema", {})
     for tname, tinfo in extra_schema.items():
         if tinfo["shape"][0] > 500_000:
@@ -237,28 +238,25 @@ def _generate_auto_pool(schema, df_train, df_test, extra_tables):
         for key in join_keys[:2]:
             if key not in df_train.columns:
                 continue
-            # Count
             ops.append({"op": "COUNT", "table": tname, "key": key})
-            # Numeric aggregations (top 5 columns, mean only — LLM round 2 adds more)
+            # Числовые агрегации — только mean, остальное добавит LLM раунд 2
             for col in numeric_cols[:5]:
                 ops.append({"op": "AGG", "table": tname, "key": key,
                             "column": col, "func": "mean"})
-            # Nunique for categoricals in many-to-1 tables
+            # Количество уникальных для категорий
             for col in cat_cols[:2]:
                 ops.append({"op": "AGG", "table": tname, "key": key,
                             "column": col, "func": "nunique"})
 
-            # Check if 1-to-1 table
+            # Для таблиц 1-к-1 — прямое подключение
             tdf = extra_tables.get(tname)
             is_one_to_one = (tdf is not None and key in tdf.columns
                              and tdf[key].nunique() == len(tdf))
 
             if is_one_to_one:
-                # Direct numeric columns
                 for col in numeric_cols[:6]:
                     ops.append({"op": "DIRECT_NUMERIC", "table": tname,
                                 "key": key, "column": col})
-                # Categorical columns: freq, target, label encoding
                 for col in cat_cols[:8]:
                     ops.append({"op": "EXTRA_FREQ_ENCODE", "table": tname,
                                 "key": key, "column": col})
@@ -271,7 +269,7 @@ def _generate_auto_pool(schema, df_train, df_test, extra_tables):
 
 
 # ---------------------------------------------------------------------------
-# Agent entry point
+# Точка входа агента
 # ---------------------------------------------------------------------------
 
 def run(state: AgentState) -> dict:
@@ -279,7 +277,7 @@ def run(state: AgentState) -> dict:
     id_col = schema["id_column"]
     target_col = schema["target_column"]
 
-    # --- Phase 1: LLM suggests operations ---
+    # --- Фаза 1: LLM предлагает операции ---
     llm_ops = []
     try:
         llm = GigaChat(
@@ -295,7 +293,7 @@ def run(state: AgentState) -> dict:
         basic_stats = json.dumps(schema.get("basic_stats", {}),
                                  ensure_ascii=False, indent=2)
         user_prompt = USER_PROMPT_TEMPLATE.format(
-            readme_text=schema["readme_text"][:3000],  # truncate long readmes
+            readme_text=schema["readme_text"][:3000],
             target_column=target_col,
             id_column=id_col,
             columns_with_dtypes=json.dumps(schema["column_dtypes"],
@@ -315,13 +313,13 @@ def run(state: AgentState) -> dict:
         state["errors_log"].append(f"FeatureEngineer LLM: {e}")
         print(f"  [FeatureEngineer] LLM failed: {e}, using auto-pool only")
 
-    # --- Phase 2: automatic candidate pool ---
+    # --- Фаза 2: автоматический пул кандидатов ---
     auto_ops = _generate_auto_pool(
         schema, state["df_train"], state["df_test"], state["extra_tables"]
     )
     print(f"  [FeatureEngineer] Auto-pool: {len(auto_ops)} operations")
 
-    # --- Phase 3: deduplicate & execute ---
+    # --- Фаза 3: дедупликация и выполнение ---
     all_ops = llm_ops + auto_ops
     seen = set()
     unique_ops = []
@@ -346,7 +344,7 @@ def run(state: AgentState) -> dict:
         name, tr_vals, te_vals = result
         if name in candidate_names or name in (id_col, target_col):
             continue
-        # Skip zero-variance features
+        # Пропускаем фичи с нулевой дисперсией
         if np.std(tr_vals) < 1e-12:
             continue
         train_out[name] = tr_vals
@@ -355,10 +353,10 @@ def run(state: AgentState) -> dict:
 
     print(f"  [FeatureEngineer] Round 1 candidates: {len(candidate_names)}")
 
-    # --- Phase 4: Multi-turn LLM — rank round 1 by correlation, ask for improvements ---
+    # --- Фаза 4: второй раунд LLM — ранжируем по корреляции, просим улучшения ---
     if candidate_names and len(candidate_names) >= 3:
         try:
-            # Fast ranking by abs correlation with target (instant, no CatBoost)
+            # Мгновенное ранжирование по корреляции с таргетом (без CatBoost)
             target_data = state["df_train"][target_col].values.astype(float)
             corr_scores = []
             for col in candidate_names:
@@ -401,7 +399,6 @@ def run(state: AgentState) -> dict:
             llm_ops_2 = _parse_llm_json(response2.content)
             print(f"  [FeatureEngineer] LLM round 2 suggested {len(llm_ops_2)} operations")
 
-            # Execute round 2 operations
             for op in llm_ops_2:
                 sig = json.dumps(op, sort_keys=True)
                 if sig in seen:

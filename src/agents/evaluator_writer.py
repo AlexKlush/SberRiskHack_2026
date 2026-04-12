@@ -1,4 +1,4 @@
-"""EvaluatorWriter agent — forward-selects top 5 features, evaluates, saves output."""
+"""Агент EvaluatorWriter — отбирает лучшие фичи, оценивает, сохраняет результат."""
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,7 @@ def run(state: AgentState) -> dict:
     test_df = state["candidate_features_test"]
     candidates = list(state["candidate_names"])
 
-    # --- Sanity: if no candidates at all, save bare minimum ---
+    # Если кандидатов нет — сохраняем заглушку
     if not candidates or train_df is None or test_df is None:
         state["errors_log"].append("CRITICAL: no candidate features")
         train_out = state["df_train"][[id_col, target_col]].copy()
@@ -29,27 +29,27 @@ def run(state: AgentState) -> dict:
         _save(train_out, test_out, ["fb_constant"], 0.0)
         return {"selected_features": ["fb_constant"], "cv_score": 0.0}
 
-    # Fill any remaining NaN / inf
+    # Заполняем оставшиеся NaN и inf
     train_df[candidates] = train_df[candidates].fillna(0)
     test_df[candidates] = test_df[candidates].fillna(0)
     for c in candidates:
         train_df[c] = np.nan_to_num(train_df[c], nan=0.0, posinf=0.0, neginf=0.0)
         test_df[c] = np.nan_to_num(test_df[c], nan=0.0, posinf=0.0, neginf=0.0)
 
-    # --- Forward selection: pick top 5 ---
+    # Отбираем лучшие фичи (до 5)
     selected = forward_select_features(
         train_df, candidates, target_col, max_features=5,
     )
 
-    # Fallback: if forward selection returns nothing, take first 5 candidates
+    # Фоллбэк: если forward selection ничего не выбрал — берём первые 5
     if not selected:
         state["errors_log"].append("Forward selection returned 0 features, taking first 5")
         selected = candidates[:5]
 
-    # --- Final 5-fold evaluation ---
+    # Финальная 5-fold оценка
     final_score = evaluate_features(train_df, selected, target_col)
 
-    # --- Build and save output ---
+    # Формируем и сохраняем результат
     train_out = train_df[[id_col, target_col] + selected].copy()
     test_out = test_df[[id_col] + selected].copy()
     train_out[selected] = train_out[selected].fillna(0)
@@ -61,7 +61,7 @@ def run(state: AgentState) -> dict:
 
 
 def _save(train_out, test_out, features, score):
-    """Write CSVs and print summary."""
+    """Сохраняем CSV и выводим итог."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     train_out.to_csv(OUTPUT_DIR / "train.csv", index=False)
     test_out.to_csv(OUTPUT_DIR / "test.csv", index=False)

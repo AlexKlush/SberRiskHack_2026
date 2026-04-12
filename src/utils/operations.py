@@ -1,19 +1,19 @@
-"""Pre-built feature operations library.
+"""Библиотека операций для генерации фичей.
 
-Each operation is safe, deterministic, and dataset-agnostic.
-Returns (feature_name, train_values, test_values) or (None, None, None) on failure.
-No exec(), no sandbox — just reliable pandas/numpy.
+Каждая операция безопасна, детерминирована и работает на любом датасете.
+Возвращает (имя_фичи, значения_train, значения_test) или (None, None, None) при ошибке.
+Без exec(), без sandbox — только pandas/numpy.
 """
 import pandas as pd
 import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Individual operations
+# Операции
 # ---------------------------------------------------------------------------
 
 def freq_encode(df_train, df_test, column, **kw):
-    """Frequency encoding — proportion of each value in train."""
+    """Частотное кодирование — доля каждого значения в train."""
     if column not in df_train.columns:
         return None, None, None
     freq = df_train[column].value_counts(normalize=True)
@@ -24,7 +24,7 @@ def freq_encode(df_train, df_test, column, **kw):
 
 
 def target_encode(df_train, df_test, column, target_col, **kw):
-    """Smoothed target-mean encoding (no leakage — global mean as prior)."""
+    """Сглаженное target-кодирование (глобальное среднее как prior)."""
     if column not in df_train.columns:
         return None, None, None
     smoothing = max(20, min(200, len(df_train) // 100))
@@ -39,7 +39,7 @@ def target_encode(df_train, df_test, column, target_col, **kw):
 
 
 def agg_feature(df_train, df_test, extra_tables, table, key, column, func, **kw):
-    """Aggregate a numeric column from an extra table grouped by key."""
+    """Агрегация числового столбца из доп. таблицы по ключу."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -67,7 +67,7 @@ def agg_feature(df_train, df_test, extra_tables, table, key, column, func, **kw)
 
 
 def count_feature(df_train, df_test, extra_tables, table, key, **kw):
-    """Row count per key in an extra table."""
+    """Количество строк по ключу в доп. таблице."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -81,7 +81,7 @@ def count_feature(df_train, df_test, extra_tables, table, key, **kw):
 
 
 def interaction(df_train, df_test, col1, op_type, col2, **kw):
-    """Arithmetic interaction between two numeric columns."""
+    """Арифметическое взаимодействие двух числовых столбцов."""
     if col1 not in df_train.columns or col2 not in df_train.columns:
         return None, None, None
 
@@ -107,7 +107,7 @@ def interaction(df_train, df_test, col1, op_type, col2, **kw):
 
 
 def rank_feature(df_train, df_test, column, **kw):
-    """Percentile rank transform."""
+    """Перцентильный ранг числового столбца."""
     if column not in df_train.columns:
         return None, None, None
     if not pd.api.types.is_numeric_dtype(df_train[column]):
@@ -119,7 +119,7 @@ def rank_feature(df_train, df_test, column, **kw):
 
 
 def is_null(df_train, df_test, column, **kw):
-    """Binary indicator: 1 if value is null, 0 otherwise."""
+    """Бинарный индикатор пропуска: 1 если NaN, иначе 0."""
     if column not in df_train.columns:
         return None, None, None
     if df_train[column].isna().sum() == 0:
@@ -131,7 +131,7 @@ def is_null(df_train, df_test, column, **kw):
 
 
 def label_encode(df_train, df_test, column, **kw):
-    """Integer label encoding for categorical columns."""
+    """Числовое кодирование категориального столбца."""
     if column not in df_train.columns:
         return None, None, None
     if pd.api.types.is_numeric_dtype(df_train[column]):
@@ -144,7 +144,7 @@ def label_encode(df_train, df_test, column, **kw):
 
 
 def direct_numeric(df_train, df_test, extra_tables, table, key, column, **kw):
-    """Direct merge of a numeric column from a 1-to-1 extra table."""
+    """Прямое подключение числового столбца из 1-к-1 доп. таблицы."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -152,7 +152,7 @@ def direct_numeric(df_train, df_test, extra_tables, table, key, column, **kw):
         return None, None, None
     if not pd.api.types.is_numeric_dtype(tdf[column]):
         return None, None, None
-    # Must be 1-to-1 (unique key)
+    # Проверяем что таблица 1-к-1 (ключ уникален)
     if tdf[key].nunique() != len(tdf):
         return None, None, None
     mapping = tdf.set_index(key)[column]
@@ -163,7 +163,7 @@ def direct_numeric(df_train, df_test, extra_tables, table, key, column, **kw):
 
 
 def ratio_to_group(df_train, df_test, extra_tables, column, table, key, ref_column, **kw):
-    """Ratio of a value to the group mean (value / group_mean)."""
+    """Отношение значения к среднему группы (value / group_mean)."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -186,13 +186,13 @@ def ratio_to_group(df_train, df_test, extra_tables, column, table, key, ref_colu
 
 
 def extra_freq_encode(df_train, df_test, extra_tables, table, key, column, **kw):
-    """Frequency encoding of a categorical column from an extra table."""
+    """Частотное кодирование категории из доп. таблицы."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
     if key not in tdf.columns or column not in tdf.columns or key not in df_train.columns:
         return None, None, None
-    # Map key -> column value, then frequency encode
+    # Маппим ключ -> значение столбца, потом считаем частоты
     mapping = tdf.drop_duplicates(key).set_index(key)[column]
     train_vals = df_train[key].map(mapping)
     freq = train_vals.value_counts(normalize=True)
@@ -208,14 +208,14 @@ def extra_freq_encode(df_train, df_test, extra_tables, table, key, column, **kw)
 
 def extra_target_encode(df_train, df_test, extra_tables, table, key, column,
                         target_col, **kw):
-    """Smoothed target encoding of a categorical column from an extra table."""
+    """Сглаженное target-кодирование категории из доп. таблицы."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
     if key not in tdf.columns or column not in tdf.columns or key not in df_train.columns:
         return None, None, None
     smoothing = max(20, min(200, len(df_train) // 100))
-    # Map key -> column value
+    # Маппим ключ -> значение столбца
     mapping = tdf.drop_duplicates(key).set_index(key)[column]
     train_vals = df_train[key].map(mapping)
     gm = df_train[target_col].mean()
@@ -234,7 +234,7 @@ def extra_target_encode(df_train, df_test, extra_tables, table, key, column,
 
 
 def cross_agg(df_train, df_test, extra_tables, table, keys, column, func, **kw):
-    """Aggregate a column from an extra table grouped by composite key."""
+    """Агрегация столбца из доп. таблицы по составному ключу."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -266,7 +266,7 @@ def cross_agg(df_train, df_test, extra_tables, table, keys, column, func, **kw):
 
 
 def extra_label_encode(df_train, df_test, extra_tables, table, key, column, **kw):
-    """Label encoding of a categorical column from an extra table."""
+    """Числовое кодирование категории из доп. таблицы."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
@@ -284,7 +284,7 @@ def extra_label_encode(df_train, df_test, extra_tables, table, key, column, **kw
 
 
 # ---------------------------------------------------------------------------
-# Operation registry
+# Реестр операций
 # ---------------------------------------------------------------------------
 
 OPERATIONS = {
@@ -306,7 +306,7 @@ OPERATIONS = {
 
 
 def execute_operation(op_dict, df_train, df_test, extra_tables, target_col):
-    """Execute one operation from the menu. Returns (name, tr, te) or None."""
+    """Выполняем одну операцию из меню. Возвращает (name, tr, te) или None."""
     op_type = op_dict.get("op")
     if op_type not in OPERATIONS:
         return None
@@ -322,11 +322,10 @@ def execute_operation(op_dict, df_train, df_test, extra_tables, target_col):
         )
         if result[0] is None:
             return None
-        # Validate output
         name, tr, te = result
         if len(tr) != len(df_train) or len(te) != len(df_test):
             return None
-        # Check for inf/nan
+        # Обрабатываем inf/nan
         tr = np.nan_to_num(tr, nan=0.0, posinf=0.0, neginf=0.0)
         te = np.nan_to_num(te, nan=0.0, posinf=0.0, neginf=0.0)
         return name, tr, te

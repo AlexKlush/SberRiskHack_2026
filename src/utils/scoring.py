@@ -1,10 +1,10 @@
-"""CatBoost CV evaluation for feature quality."""
+"""Оценка фичей через CatBoost CV и отбор лучших."""
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 
-# Match organizer scoring parameters exactly
+# Параметры CatBoost из скрипта организаторов
 CATBOOST_PARAMS = {
     "iterations": 300,
     "learning_rate": 0.05,
@@ -19,6 +19,7 @@ CATBOOST_PARAMS = {
 
 
 def evaluate_features(df_train: pd.DataFrame, feature_cols: list, target_col: str) -> float:
+    """Финальная 5-fold оценка (для отчёта, параметры как у организаторов)."""
     X = df_train[feature_cols].fillna(0).values
     y = df_train[target_col].values
 
@@ -30,7 +31,7 @@ def evaluate_features(df_train: pd.DataFrame, feature_cols: list, target_col: st
 
 
 def _fast_evaluate(df_sample: pd.DataFrame, feature_cols: list, target_col: str) -> float:
-    """Fast evaluation on a sample with adaptive CV for selection purposes."""
+    """Быстрая оценка для отбора: 100 итераций, многопоточность, адаптивные фолды."""
     X = df_sample[feature_cols].fillna(0).values
     y = df_sample[target_col].values
 
@@ -49,14 +50,14 @@ def forward_select_features(
     target_col: str,
     max_features: int = 5,
 ) -> list:
-    """Greedy forward selection on a subsample, then final scoring on full data."""
+    """Жадный forward selection: предфильтр по корреляции → дедупликация → CatBoost."""
     MAX_SAMPLE = 50_000
     if len(df_train) > MAX_SAMPLE:
         df_sample = df_train.sample(n=MAX_SAMPLE, random_state=42)
     else:
         df_sample = df_train
 
-    # --- Pre-filter: rank by abs correlation with target, keep top 20 ---
+    # Предфильтр: ранжируем по корреляции с таргетом, берём top 20
     target_vals = df_sample[target_col].values.astype(float)
     corr_ranked = []
     for col in candidate_cols:
@@ -67,7 +68,7 @@ def forward_select_features(
     pre_filtered = [col for col, _ in corr_ranked[:20]]
     print(f"  [Scoring] Pre-filter: {len(candidate_cols)} -> {len(pre_filtered)} candidates (by correlation)")
 
-    # --- Deduplicate: drop features >0.995 correlated with a higher-ranked one ---
+    # Дедупликация: убираем фичи с корреляцией >0.995 к уже отобранной
     deduped = []
     for col in pre_filtered:
         vals = df_sample[col].fillna(0).values.astype(float)
@@ -82,7 +83,7 @@ def forward_select_features(
             deduped.append(col)
     print(f"  [Scoring] After dedup: {len(deduped)} candidates")
 
-    # --- Phase 1: CatBoost-score only deduped candidates ---
+    # Индивидуальная оценка CatBoost для оставшихся кандидатов
     individual_scores = []
     for col in deduped:
         try:
@@ -97,8 +98,7 @@ def forward_select_features(
     print(f"  [Scoring] Individual scores: {[(c, f'{s:.4f}') for c, s in individual_scores]}")
     print(f"  [Scoring] Top candidates for forward selection: {top_candidates}")
 
-    # --- Phase 2: greedy forward selection ---
-    # A feature is accepted unless it degrades the combined score by more than DEGRADE_THRESHOLD.
+    # Жадный отбор: добавляем фичу если она не ухудшает скор сильнее порога
     DEGRADE_THRESHOLD = 0.001
     selected = []
     best_score = 0.0
@@ -123,7 +123,7 @@ def forward_select_features(
         if best_candidate is None:
             break
 
-        # First feature always accepted; subsequent accepted unless they degrade score
+        # Первая фича всегда принимается; остальные — если не портят скор
         if selected and best_candidate_score < best_score - DEGRADE_THRESHOLD:
             print(f"  [Scoring] Skip {best_candidate} (score {best_candidate_score:.4f} degrades {best_score:.4f} by >{DEGRADE_THRESHOLD})")
             break
@@ -132,7 +132,7 @@ def forward_select_features(
         best_score = max(best_score, best_candidate_score)
         print(f"  [Scoring] +{best_candidate} -> ROC-AUC {best_candidate_score:.4f} (best so far: {best_score:.4f})")
 
-    # Ensure at least 1 feature
+    # Гарантируем хотя бы 1 фичу
     if not selected and individual_scores:
         selected = [individual_scores[0][0]]
         print(f"  [Scoring] Fallback: {selected[0]}")

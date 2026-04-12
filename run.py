@@ -1,4 +1,4 @@
-"""Entry point for the feature-agent pipeline."""
+"""Точка входа пайплайна feature-agent."""
 import sys
 import time
 import traceback

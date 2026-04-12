@@ -1,4 +1,4 @@
-"""Pre-submit validation script (13 checks)."""
+"""Скрипт проверки сабмита перед отправкой (13 проверок)."""
 import sys
 from pathlib import Path
 
@@ -61,39 +61,39 @@ def main():
         test_cols = list(df_test.columns)
 
         has_id_target = len(train_cols) >= 2
-        check(has_id_target, "train.csv: first column is ID, second is target, then 1-5 features")
+        check(has_id_target, "train.csv: первый столбец — ID, второй — target, затем 1-5 фичей")
 
         has_id = len(test_cols) >= 1
-        check(has_id, "test.csv: first column is ID, then 1-5 features (no target)")
+        check(has_id, "test.csv: первый столбец — ID, затем 1-5 фичей (без target)")
 
         if has_id_target and has_id:
             train_features = train_cols[2:]
             test_features = test_cols[1:]
             check(train_features == test_features,
-                  "Feature names match in train and test")
+                  "Названия фичей совпадают в train и test")
 
             no_nan_train = not df_train[train_features].isna().any().any() if train_features else True
             no_nan_test = not df_test[test_features].isna().any().any() if test_features else True
-            check(no_nan_train and no_nan_test, "No NaN in feature columns")
+            check(no_nan_train and no_nan_test, "Нет NaN в столбцах фичей")
 
-            check(not df_train[train_cols[0]].duplicated().any(), "No duplicate IDs in train")
-            check(not df_test[test_cols[0]].duplicated().any(), "No duplicate IDs in test")
+            check(not df_train[train_cols[0]].duplicated().any(), "Нет дублей ID в train")
+            check(not df_test[test_cols[0]].duplicated().any(), "Нет дублей ID в test")
 
             n_features = len(train_features)
-            check(1 <= n_features <= 5, f"Number of features ({n_features}) is between 1 and 5")
+            check(1 <= n_features <= 5, f"Количество фичей ({n_features}) от 1 до 5")
         else:
             for _ in range(5):
-                check(False, "(skipped — column structure invalid)")
+                check(False, "(пропущено — структура столбцов некорректна)")
     else:
         for _ in range(7):
-            check(False, "(skipped — CSV not readable)")
+            check(False, "(пропущено — CSV не читается)")
 
     print()
     if failed == 0:
-        print("All checks passed! Ready to submit.")
+        print("Все проверки пройдены! Готово к отправке.")
         sys.exit(0)
     else:
-        print(f"{failed} checks failed.")
+        print(f"{failed} проверок не пройдено.")
         sys.exit(1)
 
 

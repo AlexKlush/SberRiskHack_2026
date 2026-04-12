@@ -1,4 +1,4 @@
-"""LangGraph StateGraph assembly — 3-agent pipeline."""
+"""Сборка LangGraph StateGraph — пайплайн из 3 агентов."""
 from langgraph.graph import StateGraph, END
 
 from src.state import AgentState
