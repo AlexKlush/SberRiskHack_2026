@@ -14,8 +14,21 @@ def _find_id_column(df_train, df_test, readme_text):
     test_cols = list(df_test.columns)
     common_cols = [c for c in train_cols if c in test_cols]
 
+    # Если общих колонок нет — пробуем case-insensitive матч
+    if not common_cols:
+        test_lower = {c.lower().strip(): c for c in test_cols}
+        for tc in train_cols:
+            matched = test_lower.get(tc.lower().strip())
+            if matched:
+                # Переименовываем колонку в test чтобы совпадала с train
+                df_test.rename(columns={matched: tc}, inplace=True)
+                common_cols.append(tc)
+        if common_cols:
+            print(f"  [DataAnalyst] Fixed column name mismatch, common: {common_cols[:5]}")
+
     # Ищем столбец с "id" в названии
-    id_keywords = ["_id", "id_", "row_id", "client_id", "sample_id", "index"]
+    id_keywords = ["_id", "id_", "row_id", "client_id", "sample_id", "index",
+                   "application_id", "app_id", "user_id", "customer_id"]
     for c in common_cols:
         cl = c.lower()
         if cl == "id" or any(kw in cl for kw in id_keywords):
@@ -35,8 +48,17 @@ def _find_id_column(df_train, df_test, readme_text):
         if df_train[c].nunique() == len(df_train) and df_test[c].nunique() == len(df_test):
             return c
 
-    # Фоллбэк — первый общий или первый столбец train
-    return common_cols[0] if common_cols else train_cols[0]
+    # Фоллбэк — ТОЛЬКО общий столбец (гарантируем что есть в обоих)
+    if common_cols:
+        return common_cols[0]
+
+    # Крайний случай: первый столбец train, добавляем его в test
+    fallback = train_cols[0]
+    if fallback not in test_cols:
+        # Переименовываем первый столбец test чтобы совпал
+        df_test.rename(columns={test_cols[0]: fallback}, inplace=True)
+        print(f"  [DataAnalyst] WARNING: no common cols, renamed test '{test_cols[0]}' -> '{fallback}'")
+    return fallback
 
 
 def _find_target_column(df_train, df_test, id_column, readme_text):
