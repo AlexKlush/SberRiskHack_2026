@@ -1,7 +1,6 @@
 """Агент FeatureEngineer — LLM выбирает операции из меню,
 затем формируется автоматический пул кандидатов. Без exec(), без sandbox."""
 import json
-from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -17,15 +16,23 @@ from src.utils.operations import execute_operation
 
 SYSTEM_PROMPT = """\
 <role>
-Ты — senior feature engineer для бинарной классификации (CatBoost).
+Ты — главный feature engineer для бинарной классификации (CatBoost).
 Ты НЕ пишешь код. Ты выбираешь операции из фиксированного меню.
+Именно от ТВОИХ решений зависит качество модели.
 </role>
+<context>
+Автоматика делает ТОЛЬКО базовое кодирование столбцов train (FREQ_ENCODE, TARGET_ENCODE, LABEL_ENCODE, IS_NULL).
+ВСЁ остальное — ТВОЯ ответственность. Без твоих операций модель будет слабой.
+</context>
 <rules>
 1. Используй ТОЛЬКО столбцы и таблицы из предоставленной схемы.
 2. НЕ используй target_column и id_column как входные столбцы операций.
-3. АКТИВНО используй дополнительные таблицы — AGG и COUNT самые сильные.
-4. Верни ТОЛЬКО валидный JSON-массив, без markdown-обёртки и пояснений.
-5. Выбирай разнообразные операции — не повторяй одно и то же.
+3. ОБЯЗАТЕЛЬНО покрой ВСЕ дополнительные таблицы — не пропускай ни одной.
+4. Для каждой доп. таблицы используй РАЗНЫЕ AGG-функции (mean, std, max, min, nunique, count) — не только mean.
+5. Для таблиц с пометкой "1-к-1" используй DIRECT_NUMERIC и EXTRA_*_ENCODE.
+6. Для таблиц "много-к-1" используй AGG, COUNT, CROSS_AGG.
+7. INTERACTION: обязательно включи div и sub (отношения и разности важнее произведений).
+8. Верни ТОЛЬКО валидный JSON-массив, без markdown-обёртки и пояснений.
 </rules>"""
 
 USER_PROMPT_TEMPLATE = """\
@@ -43,58 +50,69 @@ train_shape: {train_shape}
 <data_stats>
 {basic_stats}
 </data_stats>
+<null_percentages>
+{null_percentages}
+</null_percentages>
+<sample_rows>
+{sample_rows}
+</sample_rows>
 </context>
 
+<auto_pool_info>
+Автоматика УЖЕ создаёт: FREQ_ENCODE, TARGET_ENCODE, LABEL_ENCODE, IS_NULL для каждого столбца train.
+НЕ дублируй эти операции. Твоя задача — всё остальное:
+- AGG, COUNT, CROSS_AGG для дополнительных таблиц (разные функции!)
+- DIRECT_NUMERIC, EXTRA_*_ENCODE для таблиц 1-к-1
+- INTERACTION (особенно div и sub) между числовыми столбцами
+- RANK, RATIO_TO_GROUP для нормализации
+</auto_pool_info>
+
 <operations_menu>
-Выбери 10-15 операций из этого меню:
-
-1. FREQ_ENCODE — частотное кодирование столбца
-   {{"op": "FREQ_ENCODE", "column": "col_name"}}
-
-2. TARGET_ENCODE — сглаженное среднее таргета по группе
-   {{"op": "TARGET_ENCODE", "column": "col_name"}}
-
-3. AGG — агрегация столбца из доп. таблицы (func: mean/std/sum/max/min/count/nunique/median)
+1. AGG — агрегация столбца из доп. таблицы (func: mean/std/sum/max/min/count/nunique/median)
    {{"op": "AGG", "table": "table_name", "key": "join_key", "column": "col_name", "func": "mean"}}
 
-4. COUNT — количество строк в доп. таблице по ключу
+2. COUNT — количество строк в доп. таблице по ключу
    {{"op": "COUNT", "table": "table_name", "key": "join_key"}}
 
-5. INTERACTION — арифметическое взаимодействие (op_type: mul/div/add/sub)
+3. INTERACTION — арифметическое взаимодействие (op_type: mul/div/add/sub)
    {{"op": "INTERACTION", "col1": "col_a", "op_type": "div", "col2": "col_b"}}
 
-6. RANK — перцентильный ранг числовой колонки
+4. RANK — перцентильный ранг числовой колонки
    {{"op": "RANK", "column": "col_name"}}
 
-7. IS_NULL — индикатор пропуска (1 если NaN, 0 иначе)
-   {{"op": "IS_NULL", "column": "col_name"}}
-
-8. LABEL_ENCODE — числовое кодирование категориальной переменной
-   {{"op": "LABEL_ENCODE", "column": "col_name"}}
-
-9. DIRECT_NUMERIC — прямое подключение числовой колонки из 1-к-1 доп. таблицы
+5. DIRECT_NUMERIC — прямое подключение числовой колонки из 1-к-1 доп. таблицы
    {{"op": "DIRECT_NUMERIC", "table": "table_name", "key": "join_key", "column": "col_name"}}
 
-10. RATIO_TO_GROUP — отношение значения к среднему группы из доп. таблицы
-    {{"op": "RATIO_TO_GROUP", "column": "train_col", "table": "table_name", "key": "join_key", "ref_column": "col_name"}}
+6. RATIO_TO_GROUP — отношение значения к среднему группы из доп. таблицы
+   {{"op": "RATIO_TO_GROUP", "column": "train_col", "table": "table_name", "key": "join_key", "ref_column": "col_name"}}
 
-11. EXTRA_FREQ_ENCODE — частотное кодирование категориальной колонки из доп. таблицы
-    {{"op": "EXTRA_FREQ_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
+7. EXTRA_FREQ_ENCODE — частотное кодирование категориальной колонки из доп. таблицы
+   {{"op": "EXTRA_FREQ_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
 
-12. EXTRA_TARGET_ENCODE — target-mean кодирование категориальной колонки из доп. таблицы
-    {{"op": "EXTRA_TARGET_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
+8. EXTRA_TARGET_ENCODE — target-mean кодирование категориальной колонки из доп. таблицы
+   {{"op": "EXTRA_TARGET_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
 
-13. EXTRA_LABEL_ENCODE — числовое кодирование категориальной колонки из доп. таблицы
-    {{"op": "EXTRA_LABEL_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
+9. EXTRA_LABEL_ENCODE — числовое кодирование категориальной колонки из доп. таблицы
+   {{"op": "EXTRA_LABEL_ENCODE", "table": "table_name", "key": "join_key", "column": "cat_col"}}
 
-14. CROSS_AGG — агрегация по составному ключу из доп. таблицы
+10. CROSS_AGG — агрегация по составному ключу из доп. таблицы
     {{"op": "CROSS_AGG", "table": "table_name", "keys": ["key1", "key2"], "column": "col_name", "func": "mean"}}
+
+Также доступны (автоматика их уже делает для train, но ты можешь использовать осознанно):
+11. FREQ_ENCODE: {{"op": "FREQ_ENCODE", "column": "col_name"}}
+12. TARGET_ENCODE: {{"op": "TARGET_ENCODE", "column": "col_name"}}
+13. IS_NULL: {{"op": "IS_NULL", "column": "col_name"}}
+14. LABEL_ENCODE: {{"op": "LABEL_ENCODE", "column": "col_name"}}
 </operations_menu>
 
 <task>
-Выбери 10-15 самых полезных операций для предсказания "{target_column}".
-Думай: какие признаки будут информативны для бинарной классификации?
-ВАЖНО: если есть дополнительные таблицы — AGG, COUNT и DIRECT_NUMERIC дают сильнейшие фичи.
+Предложи 15-25 операций для предсказания "{target_column}".
+Стратегия:
+1. Покрой ВСЕ дополнительные таблицы (AGG с разными func, COUNT, DIRECT_NUMERIC).
+2. Для каждой числовой колонки доп. таблицы — минимум 2 AGG-функции (например mean + std).
+3. Добавь 3-5 INTERACTION (приоритет: div и sub между связанными столбцами).
+4. Добавь RANK для 1-2 самых важных числовых столбцов.
+5. Для 1-к-1 таблиц — DIRECT_NUMERIC для числовых, EXTRA_TARGET_ENCODE для категорий.
 Верни ТОЛЬКО JSON-массив операций.
 </task>"""
 
@@ -107,12 +125,16 @@ train_shape: {train_shape}
 </контекст>
 
 <результаты_раунда_1>
-Лучшие фичи (ROC-AUC индивидуально):
+Лучшие фичи по корреляции с таргетом:
 {top_features}
 
 Слабые фичи:
 {weak_features}
 </результаты_раунда_1>
+
+<уже_выполненные_операции>
+{executed_ops_summary}
+</уже_выполненные_операции>
 
 <доступные_таблицы>
 {extra_tables_info}
@@ -123,13 +145,13 @@ train_shape: {train_shape}
 </operations_menu>
 
 <задание>
-Проанализируй результаты первого раунда. Предложи 5-10 НОВЫХ операций, которые дополнят сильные фичи.
-Фокусируйся на:
-1. AGG с другими функциями (std, max, min, nunique) для таблиц, давших сильные фичи
-2. INTERACTION между столбцами, связанными с сильными фичами
-3. Новые комбинации таблиц и ключей, которые ещё не были использованы
-4. CROSS_AGG если в таблице есть несколько ключей, совпадающих со столбцами train
-НЕ повторяй операции из первого раунда.
+Проанализируй результаты раунда 1. Предложи 5-10 НОВЫХ операций (НЕ дублируя уже выполненные).
+Стратегия:
+1. Посмотри какие AGG-функции уже использованы — добавь ДРУГИЕ (std, max, min) для тех же таблиц.
+2. Добавь INTERACTION (div, sub) между столбцами из сильных фичей.
+3. Попробуй CROSS_AGG с составными ключами.
+4. RATIO_TO_GROUP для числовых столбцов, нормализованных по группе.
+5. Если какие-то доп. таблицы НЕ покрыты — покрой их.
 Верни ТОЛЬКО JSON-массив операций.
 </задание>"""
 
@@ -165,8 +187,9 @@ def _parse_llm_json(text: str) -> list:
     result = json.loads(text)
     return result if isinstance(result, list) else []
 
-def _build_extra_tables_info(schema: dict) -> str:
-    """Формируем описание доп. таблиц для промпта."""
+def _build_extra_tables_info(schema: dict, extra_tables: dict = None) -> str:
+    """Формируем подробное описание доп. таблиц для промпта.
+    Включает nunique, пометку 1-к-1 и примеры строк."""
     extra_schema = schema.get("extra_tables_schema", {})
     if not extra_schema:
         return "Нет дополнительных таблиц."
@@ -177,13 +200,40 @@ def _build_extra_tables_info(schema: dict) -> str:
         cols = tinfo["columns"]
         join_keys = tinfo["join_keys"]
         shape = tinfo["shape"]
-        col_desc = ", ".join(f"{c} ({dtype})" for c, dtype in cols.items())
+
+        # Описание колонок с nunique
+        col_lines = []
+        tdf = extra_tables.get(tname) if extra_tables else None
+        for c, dtype in cols.items():
+            nuniq = ""
+            if tdf is not None and c in tdf.columns:
+                nuniq = f", nunique={tdf[c].nunique()}"
+            col_lines.append(f"    {c} ({dtype}{nuniq})")
+
+        # Определяем 1-к-1 связь
+        one_to_one_keys = []
+        if tdf is not None:
+            for key in join_keys:
+                if key in tdf.columns and tdf[key].nunique() == len(tdf):
+                    one_to_one_keys.append(key)
+
+        relation = ""
+        if one_to_one_keys:
+            relation = f"\n  Связь: 1-к-1 по {one_to_one_keys} → используй DIRECT_NUMERIC"
+        else:
+            relation = "\n  Связь: много-к-1 → используй AGG/COUNT"
+
+        # Примеры строк
+        sample = ""
+        if tdf is not None:
+            sample = f"\n  Примеры (3 строки):\n{tdf.head(3).to_string(index=False)}"
+
         parts.append(
             f"Таблица '{tname}' [{shape[0]} rows x {shape[1]} cols]:\n"
-            f"  Колонки: {col_desc}\n"
-            f"  Join keys: {join_keys}"
+            f"  Join keys: {join_keys}{relation}\n"
+            f"  Колонки:\n" + "\n".join(col_lines) + sample
         )
-    return "\n".join(parts) if parts else "Нет доступных дополнительных таблиц."
+    return "\n\n".join(parts) if parts else "Нет доступных дополнительных таблиц."
 
 
 def _generate_auto_pool(schema, df_train, df_test, extra_tables):
@@ -210,60 +260,6 @@ def _generate_auto_pool(schema, df_train, df_test, extra_tables):
         if not pd.api.types.is_numeric_dtype(df_train[col]):
             ops.append({"op": "LABEL_ENCODE", "column": col})
 
-    # Взаимодействия числовых столбцов (ограничиваем чтобы не раздувать пул)
-    numeric_features = [c for c in feature_cols
-                        if pd.api.types.is_numeric_dtype(df_train[c])]
-    if len(numeric_features) >= 2:
-        pairs = list(combinations(numeric_features[:6], 2))
-        for c1, c2 in pairs[:10]:
-            ops.append({"op": "INTERACTION", "col1": c1,
-                        "op_type": "mul", "col2": c2})
-
-    # Фичи из дополнительных таблиц
-    extra_schema = schema.get("extra_tables_schema", {})
-    for tname, tinfo in extra_schema.items():
-        if tinfo["shape"][0] > 500_000:
-            continue
-        join_keys = tinfo["join_keys"]
-        all_cols = tinfo["columns"]
-
-        numeric_cols = [c for c, d in all_cols.items()
-                        if ("int" in d or "float" in d)
-                        and c not in join_keys and c != target_col
-                        and not c.startswith("Unnamed")]
-        cat_cols = [c for c, d in all_cols.items()
-                    if ("object" in d or "category" in d)
-                    and c not in join_keys]
-
-        for key in join_keys[:2]:
-            if key not in df_train.columns:
-                continue
-            ops.append({"op": "COUNT", "table": tname, "key": key})
-            # Числовые агрегации — только mean, остальное добавит LLM раунд 2
-            for col in numeric_cols[:5]:
-                ops.append({"op": "AGG", "table": tname, "key": key,
-                            "column": col, "func": "mean"})
-            # Количество уникальных для категорий
-            for col in cat_cols[:2]:
-                ops.append({"op": "AGG", "table": tname, "key": key,
-                            "column": col, "func": "nunique"})
-
-            # Для таблиц 1-к-1 — прямое подключение
-            tdf = extra_tables.get(tname)
-            is_one_to_one = (tdf is not None and key in tdf.columns
-                             and tdf[key].nunique() == len(tdf))
-
-            if is_one_to_one:
-                for col in numeric_cols[:6]:
-                    ops.append({"op": "DIRECT_NUMERIC", "table": tname,
-                                "key": key, "column": col})
-                for col in cat_cols[:8]:
-                    ops.append({"op": "EXTRA_FREQ_ENCODE", "table": tname,
-                                "key": key, "column": col})
-                    ops.append({"op": "EXTRA_TARGET_ENCODE", "table": tname,
-                                "key": key, "column": col})
-                    ops.append({"op": "EXTRA_LABEL_ENCODE", "table": tname,
-                                "key": key, "column": col})
 
     return ops
 
@@ -283,15 +279,21 @@ def run(state: AgentState) -> dict:
         llm = GigaChat(
             model="GigaChat-2-Max",
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=7000,
             verify_ssl_certs=False,
             profanity_check=False,
             scope="GIGACHAT_API_CORP",
             timeout=120,
         )
-        extra_tables_info = _build_extra_tables_info(schema)
+        extra_tables_info = _build_extra_tables_info(schema, state["extra_tables"])
         basic_stats = json.dumps(schema.get("basic_stats", {}),
                                  ensure_ascii=False, indent=2)
+        # Процент пропусков и примеры строк для контекста LLM
+        null_pct = json.dumps(schema.get("null_percentages", {}),
+                              ensure_ascii=False, indent=2)
+        sample_rows_data = schema.get("sample_rows", "")
+        if isinstance(sample_rows_data, (dict, list)):
+            sample_rows_data = json.dumps(sample_rows_data, ensure_ascii=False, indent=2)
         user_prompt = USER_PROMPT_TEMPLATE.format(
             readme_text=schema["readme_text"][:3000],
             target_column=target_col,
@@ -301,6 +303,8 @@ def run(state: AgentState) -> dict:
             train_shape=schema["train_shape"],
             extra_tables_info=extra_tables_info,
             basic_stats=basic_stats,
+            null_percentages=null_pct,
+            sample_rows=str(sample_rows_data)[:2000],
         )
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
@@ -372,13 +376,20 @@ def run(state: AgentState) -> dict:
 
             print(f"  [FeatureEngineer] Round 1 top (corr): {[(n, f'{s:.4f}') for n, s in top_5]}")
 
+            # Формируем список уже выполненных операций для LLM
+            executed_ops_lines = []
+            for op in unique_ops:
+                executed_ops_lines.append(json.dumps(op, ensure_ascii=False))
+            executed_ops_str = "\n".join(executed_ops_lines[:50])
+
             round2_prompt = ROUND2_PROMPT_TEMPLATE.format(
                 target_column=target_col,
                 id_column=id_col,
                 train_shape=schema["train_shape"],
                 top_features=top_str,
                 weak_features=weak_str,
-                extra_tables_info=_build_extra_tables_info(schema),
+                executed_ops_summary=executed_ops_str,
+                extra_tables_info=_build_extra_tables_info(schema, state["extra_tables"]),
                 operations_menu=OPERATIONS_MENU_TEXT,
             )
 
