@@ -6,6 +6,7 @@
 """
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import KFold
 
 
 # ---------------------------------------------------------------------------
@@ -24,17 +25,27 @@ def freq_encode(df_train, df_test, column, **kw):
 
 
 def target_encode(df_train, df_test, column, target_col, **kw):
-    """Сглаженное target-кодирование (глобальное среднее как prior)."""
+    """K-fold target-кодирование (без утечки таргета)."""
     if column not in df_train.columns:
         return None, None, None
     smoothing = max(20, min(200, len(df_train) // 100))
     gm = df_train[target_col].mean()
-    stats = df_train.groupby(column)[target_col].agg(["mean", "count"])
-    stats["s"] = (stats["count"] * stats["mean"] + smoothing * gm) / (stats["count"] + smoothing)
-    mapping = stats["s"]
     name = f"fe_{column}_tmean"
-    tr = df_train[column].map(mapping).fillna(gm).values
-    te = df_test[column].map(mapping).fillna(gm).values if column in df_test.columns else np.full(len(df_test), gm)
+
+    # Train: K-fold encoding — каждая строка кодируется по остальным фолдам
+    tr = np.full(len(df_train), gm)
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    for train_idx, val_idx in kf.split(df_train):
+        fold_data = df_train.iloc[train_idx]
+        fold_gm = fold_data[target_col].mean()
+        stats = fold_data.groupby(column)[target_col].agg(["mean", "count"])
+        stats["s"] = (stats["count"] * stats["mean"] + smoothing * fold_gm) / (stats["count"] + smoothing)
+        tr[val_idx] = df_train.iloc[val_idx][column].map(stats["s"]).fillna(fold_gm).values
+
+    # Test: encoding на всём train (корректно — test не участвует в CV)
+    stats_full = df_train.groupby(column)[target_col].agg(["mean", "count"])
+    stats_full["s"] = (stats_full["count"] * stats_full["mean"] + smoothing * gm) / (stats_full["count"] + smoothing)
+    te = df_test[column].map(stats_full["s"]).fillna(gm).values if column in df_test.columns else np.full(len(df_test), gm)
     return name, tr, te
 
 
@@ -208,26 +219,37 @@ def extra_freq_encode(df_train, df_test, extra_tables, table, key, column, **kw)
 
 def extra_target_encode(df_train, df_test, extra_tables, table, key, column,
                         target_col, **kw):
-    """Сглаженное target-кодирование категории из доп. таблицы."""
+    """K-fold target-кодирование категории из доп. таблицы (без утечки)."""
     if table not in extra_tables:
         return None, None, None
     tdf = extra_tables[table]
     if key not in tdf.columns or column not in tdf.columns or key not in df_train.columns:
         return None, None, None
     smoothing = max(20, min(200, len(df_train) // 100))
-    # Маппим ключ -> значение столбца
     mapping = tdf.drop_duplicates(key).set_index(key)[column]
-    train_vals = df_train[key].map(mapping)
     gm = df_train[target_col].mean()
-    stats = pd.DataFrame({"val": train_vals, "y": df_train[target_col].values})
-    grp = stats.groupby("val")["y"].agg(["mean", "count"])
-    grp["s"] = (grp["count"] * grp["mean"] + smoothing * gm) / (grp["count"] + smoothing)
-    te_map = grp["s"]
     name = f"fe_{table}_{column}_tmean"
-    tr = train_vals.map(te_map).fillna(gm).values
+
+    # Train: K-fold encoding
+    train_vals = df_train[key].map(mapping)
+    tr = np.full(len(df_train), gm)
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    for train_idx, val_idx in kf.split(df_train):
+        fold_vals = train_vals.iloc[train_idx]
+        fold_target = df_train.iloc[train_idx][target_col]
+        fold_gm = fold_target.mean()
+        stats = pd.DataFrame({"val": fold_vals, "y": fold_target.values})
+        grp = stats.groupby("val")["y"].agg(["mean", "count"])
+        grp["s"] = (grp["count"] * grp["mean"] + smoothing * fold_gm) / (grp["count"] + smoothing)
+        tr[val_idx] = train_vals.iloc[val_idx].map(grp["s"]).fillna(fold_gm).values
+
+    # Test: encoding на всём train
+    stats_full = pd.DataFrame({"val": train_vals, "y": df_train[target_col].values})
+    grp_full = stats_full.groupby("val")["y"].agg(["mean", "count"])
+    grp_full["s"] = (grp_full["count"] * grp_full["mean"] + smoothing * gm) / (grp_full["count"] + smoothing)
     if key in df_test.columns:
         test_vals = df_test[key].map(mapping)
-        te = test_vals.map(te_map).fillna(gm).values
+        te = test_vals.map(grp_full["s"]).fillna(gm).values
     else:
         te = np.full(len(df_test), gm)
     return name, tr, te

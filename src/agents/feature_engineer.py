@@ -340,6 +340,20 @@ def run(state: AgentState) -> dict:
     test_out = state["df_test"][[id_col]].copy()
     candidate_names = []
 
+    # Passthrough: исходные числовые столбцы train как кандидаты
+    feature_cols = [c for c in state["df_train"].columns if c not in (id_col, target_col)]
+    for col in feature_cols:
+        if pd.api.types.is_numeric_dtype(state["df_train"][col]) and col in state["df_test"].columns:
+            tr_vals = state["df_train"][col].fillna(0).values.astype(float)
+            te_vals = state["df_test"][col].fillna(0).values.astype(float)
+            if np.std(tr_vals) < 1e-12:
+                continue
+            name = f"raw_{col}"
+            train_out[name] = tr_vals
+            test_out[name] = te_vals
+            candidate_names.append(name)
+    print(f"  [FeatureEngineer] Raw numeric passthrough: {len(candidate_names)} features")
+
     for op in unique_ops:
         result = execute_operation(
             op, state["df_train"], state["df_test"],
