@@ -260,8 +260,48 @@ def _generate_auto_pool(schema, df_train, df_test, extra_tables):
         if not pd.api.types.is_numeric_dtype(df_train[col]):
             ops.append({"op": "LABEL_ENCODE", "column": col})
 
-    # Всё остальное (INTERACTION, AGG, COUNT, DIRECT_NUMERIC, EXTRA_*, ...)
-    # оставляем на решение LLM — это его зона ответственности
+    # Базовые фичи из дополнительных таблиц (LLM добавит std, div, CROSS_AGG сверху)
+    extra_schema = schema.get("extra_tables_schema", {})
+    for tname, tinfo in extra_schema.items():
+        if tinfo["shape"][0] > 500_000:
+            continue
+        join_keys = tinfo["join_keys"]
+        all_cols = tinfo["columns"]
+
+        numeric_cols = [c for c, d in all_cols.items()
+                        if ("int" in d or "float" in d)
+                        and c not in join_keys and c != target_col
+                        and not c.startswith("Unnamed")]
+        cat_cols = [c for c, d in all_cols.items()
+                    if ("object" in d or "category" in d)
+                    and c not in join_keys]
+
+        for key in join_keys[:2]:
+            if key not in df_train.columns:
+                continue
+            ops.append({"op": "COUNT", "table": tname, "key": key})
+            for col in numeric_cols[:5]:
+                ops.append({"op": "AGG", "table": tname, "key": key,
+                            "column": col, "func": "mean"})
+            for col in cat_cols[:2]:
+                ops.append({"op": "AGG", "table": tname, "key": key,
+                            "column": col, "func": "nunique"})
+
+            tdf = extra_tables.get(tname)
+            is_one_to_one = (tdf is not None and key in tdf.columns
+                             and tdf[key].nunique() == len(tdf))
+
+            if is_one_to_one:
+                for col in numeric_cols[:6]:
+                    ops.append({"op": "DIRECT_NUMERIC", "table": tname,
+                                "key": key, "column": col})
+                for col in cat_cols[:8]:
+                    ops.append({"op": "EXTRA_FREQ_ENCODE", "table": tname,
+                                "key": key, "column": col})
+                    ops.append({"op": "EXTRA_TARGET_ENCODE", "table": tname,
+                                "key": key, "column": col})
+                    ops.append({"op": "EXTRA_LABEL_ENCODE", "table": tname,
+                                "key": key, "column": col})
 
     return ops
 

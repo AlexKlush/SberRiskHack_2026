@@ -92,7 +92,7 @@ def forward_select_features(
             individual_scores.append((col, 0.0))
 
     individual_scores.sort(key=lambda x: x[1], reverse=True)
-    top_candidates = [col for col, _ in individual_scores[:7]]
+    top_candidates = [col for col, _ in individual_scores[:10]]
 
     print(f"  [Scoring] Individual scores: {[(c, f'{s:.4f}') for c, s in individual_scores]}")
     print(f"  [Scoring] Top candidates for forward selection: {top_candidates}")
