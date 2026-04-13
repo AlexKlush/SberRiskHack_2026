@@ -8,6 +8,59 @@ from src.state import AgentState
 DATA_DIR = Path("data")
 
 
+def _validate_columns(df_train, df_test, id_col, target_col):
+    """Валидация определённых столбцов. Падает если что-то не так."""
+    errors = []
+
+    # 1. id и target не должны совпадать
+    if id_col == target_col:
+        errors.append(f"id_column и target_column совпадают: '{id_col}'")
+
+    # 2. id_column должен быть в train
+    if id_col not in df_train.columns:
+        errors.append(f"id_column '{id_col}' не найден в train. Колонки train: {list(df_train.columns)[:10]}")
+
+    # 3. id_column должен быть в test (после переименований)
+    if id_col not in df_test.columns:
+        errors.append(f"id_column '{id_col}' не найден в test. Колонки test: {list(df_test.columns)[:10]}")
+
+    # 4. target_column должен быть в train
+    if target_col not in df_train.columns:
+        errors.append(f"target_column '{target_col}' не найден в train. Колонки train: {list(df_train.columns)[:10]}")
+
+    # 5. target должен быть бинарным (бинарная классификация)
+    if target_col in df_train.columns:
+        unique_vals = set(df_train[target_col].dropna().unique())
+        if not unique_vals <= {0, 1, 0.0, 1.0}:
+            errors.append(
+                f"target_column '{target_col}' не бинарный. "
+                f"Уникальные значения ({len(unique_vals)}): {sorted(list(unique_vals))[:10]}"
+            )
+
+    # 6. id_column в test должен иметь высокую уникальность (>50%)
+    if id_col in df_test.columns:
+        nunique = df_test[id_col].nunique()
+        ratio = nunique / len(df_test) if len(df_test) > 0 else 0
+        if ratio < 0.5:
+            errors.append(
+                f"id_column '{id_col}' имеет низкую уникальность в test: "
+                f"{nunique}/{len(df_test)} ({ratio:.1%}). Вероятно, это не ID-столбец"
+            )
+
+    # 7. Должны быть фичи (столбцы кроме id и target)
+    feature_cols = [c for c in df_train.columns if c not in (id_col, target_col)]
+    if not feature_cols:
+        errors.append("Нет столбцов-фичей в train (все столбцы = id + target)")
+
+    if errors:
+        msg = "COLUMN VALIDATION FAILED:\n" + "\n".join(f"  - {e}" for e in errors)
+        print(f"  [DataAnalyst] {msg}")
+        raise ValueError(msg)
+
+    print(f"  [DataAnalyst] Validation OK: id='{id_col}' (test nunique={df_test[id_col].nunique()}), "
+          f"target='{target_col}' (binary, {len(feature_cols)} features)")
+
+
 def _find_id_column(df_train, df_test, readme_text):
     """Автоопределение столбца-идентификатора по нескольким стратегиям."""
     train_cols = list(df_train.columns)
@@ -205,6 +258,9 @@ def run(state: AgentState) -> dict:
 
     # Обновляем test_cols после возможных переименований в _find_id_column
     test_cols = list(df_test.columns)
+
+    # ===== ВАЛИДАЦИЯ: гарантируем корректность или падаем с ясной ошибкой =====
+    _validate_columns(df_train, df_test, id_column, target_column)
 
     test_has_features = any(
         c not in (id_column, target_column) for c in test_cols

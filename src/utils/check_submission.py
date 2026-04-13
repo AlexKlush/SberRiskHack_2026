@@ -13,10 +13,10 @@ def main():
     def check(condition: bool, msg: str):
         nonlocal passed, failed
         if condition:
-            print(f"  \u2713 {msg}")
+            print(f"  [OK] {msg}")
             passed += 1
         else:
-            print(f"  \u2717 FAIL: {msg}")
+            print(f"  [FAIL] {msg}")
             failed += 1
 
     env_path = root / ".env"
