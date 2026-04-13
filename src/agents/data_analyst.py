@@ -8,7 +8,7 @@ from src.state import AgentState
 DATA_DIR = Path("data")
 
 
-def _validate_columns(df_train, df_test, id_col, target_col):
+def _validate_columns(df_train, df_test, id_col, target_col, extra_tables):
     """Валидация определённых столбцов. Падает если что-то не так."""
     errors = []
 
@@ -47,18 +47,21 @@ def _validate_columns(df_train, df_test, id_col, target_col):
                 f"{nunique}/{len(df_test)} ({ratio:.1%}). Вероятно, это не ID-столбец"
             )
 
-    # 7. Должны быть фичи (столбцы кроме id и target)
+    # 7. Должны быть фичи: в train ИЛИ в дополнительных таблицах
     feature_cols = [c for c in df_train.columns if c not in (id_col, target_col)]
-    if not feature_cols:
-        errors.append("Нет столбцов-фичей в train (все столбцы = id + target)")
+    if not feature_cols and not extra_tables:
+        errors.append("Нет столбцов-фичей ни в train, ни в дополнительных таблицах")
 
     if errors:
         msg = "COLUMN VALIDATION FAILED:\n" + "\n".join(f"  - {e}" for e in errors)
         print(f"  [DataAnalyst] {msg}")
         raise ValueError(msg)
 
+    src = f"{len(feature_cols)} train cols"
+    if extra_tables:
+        src += f" + {len(extra_tables)} extra tables"
     print(f"  [DataAnalyst] Validation OK: id='{id_col}' (test nunique={df_test[id_col].nunique()}), "
-          f"target='{target_col}' (binary, {len(feature_cols)} features)")
+          f"target='{target_col}' (binary), features from {src}")
 
 
 def _find_id_column(df_train, df_test, readme_text):
@@ -260,7 +263,7 @@ def run(state: AgentState) -> dict:
     test_cols = list(df_test.columns)
 
     # ===== ВАЛИДАЦИЯ: гарантируем корректность или падаем с ясной ошибкой =====
-    _validate_columns(df_train, df_test, id_column, target_column)
+    _validate_columns(df_train, df_test, id_column, target_column, extra_tables)
 
     test_has_features = any(
         c not in (id_column, target_column) for c in test_cols
