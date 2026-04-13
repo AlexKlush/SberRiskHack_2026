@@ -37,7 +37,7 @@ def _validate_columns(df_train, df_test, id_col, target_col, extra_tables):
                 f"Уникальные значения ({len(unique_vals)}): {sorted(list(unique_vals))[:10]}"
             )
 
-    # 6. id_column в test должен иметь высокую уникальность (>50%)
+    # 6. id_column должен иметь высокую уникальность в обоих датасетах
     if id_col in df_test.columns:
         nunique = df_test[id_col].nunique()
         ratio = nunique / len(df_test) if len(df_test) > 0 else 0
@@ -46,8 +46,33 @@ def _validate_columns(df_train, df_test, id_col, target_col, extra_tables):
                 f"id_column '{id_col}' имеет низкую уникальность в test: "
                 f"{nunique}/{len(df_test)} ({ratio:.1%}). Вероятно, это не ID-столбец"
             )
+    if id_col in df_train.columns:
+        nunique_tr = df_train[id_col].nunique()
+        ratio_tr = nunique_tr / len(df_train) if len(df_train) > 0 else 0
+        if ratio_tr < 0.5:
+            errors.append(
+                f"id_column '{id_col}' имеет низкую уникальность в train: "
+                f"{nunique_tr}/{len(df_train)} ({ratio_tr:.1%}). Вероятно, это не ID-столбец"
+            )
 
-    # 7. Должны быть фичи: в train ИЛИ в дополнительных таблицах
+    # 7. target НЕ должен быть в test (иначе мы скорее всего взяли фичу)
+    if target_col in df_test.columns:
+        # Это WARNING, не ошибка — бывают датасеты где target есть в test
+        print(f"  [DataAnalyst] WARNING: target '{target_col}' присутствует в test — необычно для задачи")
+
+    # 8. Значения id в train и test должны пересекаться
+    if id_col in df_train.columns and id_col in df_test.columns:
+        train_ids = set(df_train[id_col].dropna().unique())
+        test_ids = set(df_test[id_col].dropna().unique())
+        overlap = len(train_ids & test_ids)
+        if len(test_ids) > 0 and overlap == 0 and len(train_ids) > 0:
+            errors.append(
+                f"id_column '{id_col}': нулевое пересечение значений train/test "
+                f"(train: {len(train_ids)} unique, test: {len(test_ids)} unique). "
+                f"Вероятно, это не ID-столбец"
+            )
+
+    # 9. Должны быть фичи: в train ИЛИ в дополнительных таблицах
     feature_cols = [c for c in df_train.columns if c not in (id_col, target_col)]
     if not feature_cols and not extra_tables:
         errors.append("Нет столбцов-фичей ни в train, ни в дополнительных таблицах")
@@ -60,7 +85,10 @@ def _validate_columns(df_train, df_test, id_col, target_col, extra_tables):
     src = f"{len(feature_cols)} train cols"
     if extra_tables:
         src += f" + {len(extra_tables)} extra tables"
-    print(f"  [DataAnalyst] Validation OK: id='{id_col}' (test nunique={df_test[id_col].nunique()}), "
+    id_uniq_train = df_train[id_col].nunique() if id_col in df_train.columns else 0
+    id_uniq_test = df_test[id_col].nunique() if id_col in df_test.columns else 0
+    print(f"  [DataAnalyst] Validation OK: id='{id_col}' "
+          f"(train uniq={id_uniq_train}/{len(df_train)}, test uniq={id_uniq_test}/{len(df_test)}), "
           f"target='{target_col}' (binary), features from {src}")
 
 
